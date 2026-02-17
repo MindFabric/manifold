@@ -533,7 +533,8 @@ async function loadState() {
   for (let ci = 0; ci < data.collections.length; ci++) {
     const colData = data.collections[ci];
     // Skip System collections from saved state - we always recreate it fresh
-    if (colData.isSystem) continue;
+    // Also skip any collection named "System" from old state without the flag
+    if (colData.isSystem || colData.name === 'System') continue;
 
     const col = {
       name: colData.name || `Collection ${ci + 1}`,
@@ -558,6 +559,9 @@ async function loadState() {
   }
 
   state.micDevice = data.micDevice || null;
+
+  // If no non-system collections were loaded, treat as fresh
+  if (state.collections.length === 0) return false;
 
   const aci = Math.min(data.activeCollection || 0, state.collections.length - 1);
   const ati = Math.min(data.activeTab || 0, state.collections[aci].tabs.length - 1);

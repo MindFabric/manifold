@@ -129,6 +129,29 @@ body {
   color: #444 !important;
   font-size: 8px !important;
 }
+.collection-system .tab-row {
+  background: #0e0e0e;
+  border-left: 1px solid #2a2a2a;
+  margin-left: 8px;
+}
+.collection-system .tab-row:hover {
+  background: #141414;
+}
+.collection-system .tab-row.selected {
+  background: #141414;
+  border-left: 3px solid #D97757;
+}
+.collection-system .row-label {
+  color: #777;
+  font-size: 11px;
+}
+.collection-system .tab-row.selected .row-label {
+  color: #D97757;
+}
+.collection-system .collection-body {
+  border-left: 1px solid #1e1e1e;
+  margin-left: 4px;
+}
 .collection-header {
   display: flex;
   align-items: center;
