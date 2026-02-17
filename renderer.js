@@ -532,11 +532,14 @@ async function loadState() {
 
   for (let ci = 0; ci < data.collections.length; ci++) {
     const colData = data.collections[ci];
+    // Skip System collections from saved state - we always recreate it fresh
+    if (colData.isSystem) continue;
+
     const col = {
       name: colData.name || `Collection ${ci + 1}`,
       path: colData.path || homeDir || '/',
       expanded: colData.expanded !== false,
-      isSystem: colData.isSystem || false,
+      isSystem: false,
       tabs: [],
     };
 
@@ -725,29 +728,17 @@ claude.onHotReloadCss(() => {
       addSession(0);
     }
 
-    // Ensure System collection always exists as the first collection
-    const sysIdx = state.collections.findIndex((c) => c.isSystem);
-    if (sysIdx === -1) {
-      // Insert at position 0
-      state.collections.unshift({
-        name: 'System',
-        path: appSourceDir,
-        expanded: false,
-        isSystem: true,
-        tabs: [],
-      });
-      // Shift active indices since we inserted at 0
-      if (state.activeCollectionIdx >= 0) state.activeCollectionIdx++;
-      addSession(0);
-    } else if (sysIdx !== 0) {
-      // Move it to the front if it ended up somewhere else
-      const sys = state.collections.splice(sysIdx, 1)[0];
-      state.collections.unshift(sys);
-      if (state.activeCollectionIdx >= 0) {
-        if (state.activeCollectionIdx === sysIdx) state.activeCollectionIdx = 0;
-        else if (state.activeCollectionIdx < sysIdx) state.activeCollectionIdx++;
-      }
-    }
+    // Always insert System as the first collection
+    state.collections.unshift({
+      name: 'System',
+      path: appSourceDir,
+      expanded: false,
+      isSystem: true,
+      tabs: [],
+    });
+    // Shift active indices since we inserted at 0
+    if (state.activeCollectionIdx >= 0) state.activeCollectionIdx++;
+    addSession(0);
 
     renderCollections();
   } catch (err) {
