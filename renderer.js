@@ -97,11 +97,6 @@ function createTerminalInstance(tabId, cwd, resume = false) {
 
 // ── Receive data from pty ──
 claude.onTerminalData((id, data) => {
-  // Route to system terminal or user terminals
-  if (id === 'system-claude' && systemTerminal) {
-    systemTerminal.terminal.write(data);
-    return;
-  }
   const inst = terminalInstances.get(id);
   if (inst) inst.terminal.write(data);
 });
@@ -122,7 +117,7 @@ function renderCollections() {
         <input class="collection-rename" type="text" value="${escAttr(col.name)}">
         <div class="collection-btns">
           <button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
-          <button class="collection-btn-del del-btn" data-ci="${ci}" title="Delete collection">${'\u2715'}</button>
+          ${col.isSystem ? '' : `<button class="collection-btn-del del-btn" data-ci="${ci}" title="Delete collection">${'\u2715'}</button>`}
           <button class="collection-btn add-btn" data-ci="${ci}" title="New session">+</button>
         </div>
       </div>
@@ -394,6 +389,7 @@ async function addCollection(askPath = false) {
 
 function deleteCollection(ci) {
   if (state.collections.length <= 1) return;
+  if (state.collections[ci] && state.collections[ci].isSystem) return; // Can't delete System
 
   if (state.gridCollection === ci) exitGridMode();
 
@@ -520,6 +516,7 @@ async function saveState() {
       name: col.name,
       path: col.path,
       expanded: col.expanded,
+      isSystem: col.isSystem || false,
       tabs: col.tabs.map((t) => ({ name: t.name, cwd: t.cwd })),
     })),
     activeCollection: state.activeCollectionIdx,
@@ -539,6 +536,7 @@ async function loadState() {
       name: colData.name || `Collection ${ci + 1}`,
       path: colData.path || homeDir || '/',
       expanded: colData.expanded !== false,
+      isSystem: colData.isSystem || false,
       tabs: [],
     };
 
@@ -642,15 +640,6 @@ claude.onSaveState(() => saveState());
 
 // ── Resize handler ──
 window.addEventListener('resize', () => {
-  // Resize system terminal if expanded
-  if (systemTerminal && systemTabId) {
-    const systemBar = document.getElementById('system-bar');
-    if (systemBar && !systemBar.classList.contains('collapsed')) {
-      systemTerminal.fitAddon.fit();
-      claude.resizeTerminal(systemTabId, systemTerminal.terminal.cols, systemTerminal.terminal.rows);
-    }
-  }
-
   const tab = getActiveTab();
   if (tab && state.gridCollection === null) {
     const inst = terminalInstances.get(tab.id);
@@ -697,75 +686,14 @@ function escAttr(str) {
   return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
-// ── System Terminal ──
-let systemTerminal = null;
-let systemTabId = null;
-
-function initSystemTerminal(appSourceDir) {
-  const container = document.getElementById('system-terminal');
-  const header = document.getElementById('system-header');
-  const systemBar = document.getElementById('system-bar');
-  const resetBtn = document.getElementById('system-reset-btn');
-
-  // Start collapsed
-  systemBar.classList.add('collapsed');
-
-  // Toggle expand/collapse
-  header.addEventListener('click', (e) => {
-    if (e.target === resetBtn) return;
-    systemBar.classList.toggle('collapsed');
-    if (!systemBar.classList.contains('collapsed') && systemTerminal) {
-      requestAnimationFrame(() => {
-        systemTerminal.fitAddon.fit();
-        claude.resizeTerminal(systemTabId, systemTerminal.terminal.cols, systemTerminal.terminal.rows);
-        systemTerminal.terminal.focus();
-      });
-    }
-  });
-
-  // Reset button
-  resetBtn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    if (confirm('Reset app UI to defaults? Your plugins will be kept.')) {
-      await claude.resetAppSource();
-      // Reload will happen automatically via file watcher
-    }
-  });
-
-  // Create the system terminal
-  systemTabId = 'system-claude';
-  const term = new Terminal({
-    cursorBlink: true,
-    scrollback: 50000,
-    fontFamily: '"Share Tech Mono", monospace',
-    fontSize: 13,
-    theme: {
-      background: '#0e0e0e',
-      foreground: '#d0d0d0',
-      cursor: '#D97757',
-    },
-  });
-
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-
-  systemTerminal = { terminal: term, fitAddon };
-
-  term.open(container);
-  term.onData((data) => claude.sendInput(systemTabId, data));
-
-  // Spawn the system Claude pointing at the app source directory
-  claude.createTerminal({ id: systemTabId, cwd: appSourceDir, resume: true });
-
-  requestAnimationFrame(() => fitAddon.fit());
-}
-
 // Handle CSS hot-reload without full page reload
 claude.onHotReloadCss(() => {
-  const link = document.querySelector('link[href="styles.css"]');
-  if (link) {
-    link.href = 'styles.css?' + Date.now();
-  }
+  const links = document.querySelectorAll('link[rel="stylesheet"]');
+  links.forEach((link) => {
+    if (link.href.includes('styles.css')) {
+      link.href = 'styles.css?' + Date.now();
+    }
+  });
 });
 
 // ── Init ──
@@ -783,9 +711,8 @@ claude.onHotReloadCss(() => {
     document.getElementById('header-hints').textContent =
       `${toggle} toggle | ${mod}+T new session | ${mod}+P open in path | ${mod}+W close | ${mod}+G grid | Alt+1-9 switch`;
 
-    // Init system terminal
+    // Get app source dir for the System collection
     const appSourceDir = await claude.getAppSourceDir();
-    initSystemTerminal(appSourceDir);
 
     const loaded = await loadState();
     if (!loaded) {
@@ -796,8 +723,23 @@ claude.onHotReloadCss(() => {
         tabs: [],
       });
       addSession(0);
-      renderCollections();
     }
+
+    // Ensure System collection always exists as the last collection
+    const hasSystem = state.collections.some((c) => c.isSystem);
+    if (!hasSystem) {
+      const sysCi = state.collections.length;
+      state.collections.push({
+        name: 'System',
+        path: appSourceDir,
+        expanded: false,
+        isSystem: true,
+        tabs: [],
+      });
+      addSession(sysCi);
+    }
+
+    renderCollections();
   } catch (err) {
     console.error('Init failed:', err);
   }
