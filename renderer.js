@@ -252,9 +252,12 @@ function selectTab(ci, ti) {
   const row = document.querySelector(`.tab-row[data-ci="${ci}"][data-ti="${ti}"]`);
   if (row) row.classList.add('selected');
 
-  // Show terminal (single mode only)
+  // Show terminal and focus it
   if (state.gridCollection === null) {
     showSingleTerminal(tab.id);
+  } else {
+    // Grid mode: highlight selected cell and focus its terminal
+    highlightGridCell(tab.id);
   }
 }
 
@@ -268,6 +271,21 @@ function showSingleTerminal(tabId) {
       claude.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
       inst.terminal.focus();
     });
+  }
+}
+
+function highlightGridCell(tabId) {
+  // Remove highlight from all grid cells
+  document.querySelectorAll('.grid-cell').forEach((cell) => {
+    cell.classList.remove('grid-cell-active');
+  });
+
+  // Find and highlight the cell containing this terminal, then focus it
+  const inst = terminalInstances.get(tabId);
+  if (inst && inst.element) {
+    const cell = inst.element.closest('.grid-cell');
+    if (cell) cell.classList.add('grid-cell-active');
+    requestAnimationFrame(() => inst.terminal.focus());
   }
 }
 
@@ -452,6 +470,13 @@ function enterGridMode(ci) {
       closeSession(ci, ti);
     });
     header.appendChild(closeBtn);
+
+    // Click cell header to select and focus this terminal
+    header.addEventListener('click', (e) => {
+      if (e.target === closeBtn) return;
+      selectTab(ci, ti);
+    });
+
     cell.appendChild(header);
 
     const inst = terminalInstances.get(tab.id);
