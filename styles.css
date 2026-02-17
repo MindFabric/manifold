@@ -106,6 +106,29 @@ body {
 .collection {
   margin: 0 6px;
 }
+
+/* ── System collection ── */
+.collection-system {
+  margin-bottom: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.system-header {
+  background: #111 !important;
+  border-left: 2px solid #D97757;
+}
+.system-header:hover {
+  background: #161616 !important;
+}
+.system-header .collection-name {
+  color: #D97757 !important;
+  font-size: 11px !important;
+  letter-spacing: 1px;
+}
+.system-header .collection-path {
+  color: #444 !important;
+  font-size: 8px !important;
+}
 .collection-header {
   display: flex;
   align-items: center;

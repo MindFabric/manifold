@@ -106,9 +106,9 @@ function renderCollections() {
   collectionsList.innerHTML = '';
   state.collections.forEach((col, ci) => {
     const colEl = document.createElement('div');
-    colEl.className = 'collection';
+    colEl.className = `collection${col.isSystem ? ' collection-system' : ''}`;
     colEl.innerHTML = `
-      <div class="collection-header" data-ci="${ci}">
+      <div class="collection-header${col.isSystem ? ' system-header' : ''}" data-ci="${ci}">
         <span class="collection-arrow">${col.expanded ? '\u25BC' : '\u25B6'}</span>
         <div class="collection-info">
           <span class="collection-name">${escHtml(col.name)}</span>
@@ -725,18 +725,28 @@ claude.onHotReloadCss(() => {
       addSession(0);
     }
 
-    // Ensure System collection always exists as the last collection
-    const hasSystem = state.collections.some((c) => c.isSystem);
-    if (!hasSystem) {
-      const sysCi = state.collections.length;
-      state.collections.push({
+    // Ensure System collection always exists as the first collection
+    const sysIdx = state.collections.findIndex((c) => c.isSystem);
+    if (sysIdx === -1) {
+      // Insert at position 0
+      state.collections.unshift({
         name: 'System',
         path: appSourceDir,
         expanded: false,
         isSystem: true,
         tabs: [],
       });
-      addSession(sysCi);
+      // Shift active indices since we inserted at 0
+      if (state.activeCollectionIdx >= 0) state.activeCollectionIdx++;
+      addSession(0);
+    } else if (sysIdx !== 0) {
+      // Move it to the front if it ended up somewhere else
+      const sys = state.collections.splice(sysIdx, 1)[0];
+      state.collections.unshift(sys);
+      if (state.activeCollectionIdx >= 0) {
+        if (state.activeCollectionIdx === sysIdx) state.activeCollectionIdx = 0;
+        else if (state.activeCollectionIdx < sysIdx) state.activeCollectionIdx++;
+      }
     }
 
     renderCollections();
