@@ -9,9 +9,9 @@ const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 
 // Set Linux WM_CLASS so desktop environment uses our icon
-if (!IS_WIN && !IS_MAC) app.setName('claude-sidebar');
+if (!IS_WIN && !IS_MAC) app.setName('manifold');
 
-const CLAUDE_CMD = process.env.CLAUDE_SIDEBAR_CMD || 'claude --dangerously-skip-permissions';
+const CLAUDE_CMD = process.env.MANIFOLD_CMD || 'claude --dangerously-skip-permissions';
 const STATE_DIR = path.join(app.getPath('userData'), 'state');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 

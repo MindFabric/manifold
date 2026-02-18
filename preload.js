@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
-contextBridge.exposeInMainWorld('claude', {
+contextBridge.exposeInMainWorld('manifold', {
   // Environment
   getHomeDir: () => ipcRenderer.invoke('get-home-dir'),
   getPlatform: () => ipcRenderer.invoke('get-platform'),

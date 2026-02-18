@@ -79,16 +79,16 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
   // Spawn backend pty — pass conversationId for --resume if available
-  claude.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '' });
+  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '' });
 
   // Pipe input to pty
-  term.onData((data) => claude.sendInput(tabId, data));
+  term.onData((data) => manifold.sendInput(tabId, data));
 
   // Open terminal (deferred to let DOM settle)
   requestAnimationFrame(() => {
     term.open(el);
     fitAddon.fit();
-    claude.resizeTerminal(tabId, term.cols, term.rows);
+    manifold.resizeTerminal(tabId, term.cols, term.rows);
   });
 
   return { terminal: term, fitAddon, element: el };
@@ -96,7 +96,7 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
 
 // ── Terminal cleanup ──
 function destroyTerminalInstance(tabId) {
-  claude.destroyTerminal(tabId);
+  manifold.destroyTerminal(tabId);
   const inst = terminalInstances.get(tabId);
   if (inst) {
     if (inst.element.parentNode) inst.element.parentNode.removeChild(inst.element);
@@ -106,13 +106,13 @@ function destroyTerminalInstance(tabId) {
 }
 
 // ── Receive data from pty ──
-claude.onTerminalData((id, data) => {
+manifold.onTerminalData((id, data) => {
   const inst = terminalInstances.get(id);
   if (inst) inst.terminal.write(data);
 });
 
 // ── Auto-naming ──
-claude.onTerminalAutoName((id, name) => {
+manifold.onTerminalAutoName((id, name) => {
   // Find the tab with this ID and update its name (only if still default)
   for (const col of state.collections) {
     for (const tab of col.tabs) {
@@ -387,7 +387,7 @@ function showSingleTerminal(tabId) {
     inst.element.style.display = '';
     requestAnimationFrame(() => {
       inst.fitAddon.fit();
-      claude.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
+      manifold.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
       inst.terminal.focus();
     });
   }
@@ -468,7 +468,7 @@ async function addCollection(askPath = false) {
   let name = null;
 
   if (askPath) {
-    folderPath = await claude.pickFolder();
+    folderPath = await manifold.pickFolder();
     if (!folderPath) return;
     const parts = folderPath.split(/[/\\]/);
     name = parts[parts.length - 1] || folderPath;
@@ -583,7 +583,7 @@ function enterGridMode(ci) {
       cell.appendChild(inst.element);
       requestAnimationFrame(() => {
         inst.fitAddon.fit();
-        claude.resizeTerminal(tab.id, inst.terminal.cols, inst.terminal.rows);
+        manifold.resizeTerminal(tab.id, inst.terminal.cols, inst.terminal.rows);
       });
     }
 
@@ -619,7 +619,7 @@ async function saveState() {
   // Update conversation IDs from main process (parallel for speed)
   const allTabs = state.collections.flatMap(col => col.tabs);
   const convoResults = await Promise.all(
-    allTabs.map(tab => claude.getConversationId(tab.id).catch(() => null))
+    allTabs.map(tab => manifold.getConversationId(tab.id).catch(() => null))
   );
   allTabs.forEach((tab, i) => {
     if (convoResults[i]) tab.conversationId = convoResults[i];
@@ -640,11 +640,11 @@ async function saveState() {
     activeTab: state.activeTabIdx,
     uiScale: parseInt(scaleSlider.value) || 100,
   };
-  await claude.saveState(data);
+  await manifold.saveState(data);
 }
 
 async function loadState() {
-  const data = await claude.loadState();
+  const data = await manifold.loadState();
   if (!data || !data.collections || !data.collections.length) return false;
 
   for (let ci = 0; ci < data.collections.length; ci++) {
@@ -780,7 +780,7 @@ document.addEventListener('keydown', (e) => {
 setInterval(async () => {
   const tabIds = [...terminalInstances.keys()];
   const results = await Promise.all(
-    tabIds.map(id => claude.isTerminalActive(id).catch(() => false))
+    tabIds.map(id => manifold.isTerminalActive(id).catch(() => false))
   );
   tabIds.forEach((tabId, i) => {
     const dot = document.querySelector(`.row-dot[data-tabid="${tabId}"]`);
@@ -793,7 +793,7 @@ setInterval(async () => {
 
 // ── Auto-save ──
 setInterval(saveState, 30000);
-claude.onSaveState(() => saveState());
+manifold.onSaveState(() => saveState());
 
 // ── Resize handler ──
 window.addEventListener('resize', () => {
@@ -802,7 +802,7 @@ window.addEventListener('resize', () => {
     const inst = terminalInstances.get(tab.id);
     if (inst) {
       inst.fitAddon.fit();
-      claude.resizeTerminal(tab.id, inst.terminal.cols, inst.terminal.rows);
+      manifold.resizeTerminal(tab.id, inst.terminal.cols, inst.terminal.rows);
     }
   }
   if (state.gridCollection !== null) {
@@ -812,7 +812,7 @@ window.addEventListener('resize', () => {
         const inst = terminalInstances.get(t.id);
         if (inst) {
           inst.fitAddon.fit();
-          claude.resizeTerminal(t.id, inst.terminal.cols, inst.terminal.rows);
+          manifold.resizeTerminal(t.id, inst.terminal.cols, inst.terminal.rows);
         }
       });
     }
@@ -865,7 +865,7 @@ function todayStr() { return toDateStr(new Date()); }
 async function openJournalViewer() {
   journalOverlay.classList.remove('hidden');
   // Load available dates
-  const dates = await claude.listJournalDates();
+  const dates = await manifold.listJournalDates();
   journalDates = new Set(dates);
   journalViewMonth = new Date();
   journalSelectedDate = null;
@@ -973,7 +973,7 @@ async function selectJournalDate(dateStr) {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 
-  const content = await claude.readJournal(dateStr);
+  const content = await manifold.readJournal(dateStr);
   if (content) {
     journalContentBody.innerHTML = renderMarkdown(content);
   } else {
@@ -1026,7 +1026,7 @@ const scaleValue = document.getElementById('scale-value');
 
 function applyScale(pct) {
   const factor = pct / 100;
-  claude.setZoomFactor(factor);
+  manifold.setZoomFactor(factor);
   scaleValue.textContent = `${pct}%`;
   scaleSlider.value = pct;
   // Refit all visible terminals after zoom settles
@@ -1034,7 +1034,7 @@ function applyScale(pct) {
     for (const [tabId, inst] of terminalInstances) {
       try {
         inst.fitAddon.fit();
-        claude.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
+        manifold.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
       } catch (_) {}
     }
   });
@@ -1058,7 +1058,7 @@ scaleSlider.addEventListener('dblclick', () => {
 document.getElementById('nuke-btn').addEventListener('click', async () => {
   if (!confirm('Factory reset — clear all saved state and start fresh?')) return;
   if (!confirm('Last chance. Reset everything?')) return;
-  await claude.saveState(null);
+  await manifold.saveState(null);
   location.reload();
 });
 
@@ -1073,8 +1073,8 @@ function escAttr(str) {
 // ── Init ──
 (async () => {
   try {
-    homeDir = await claude.getHomeDir() || '/';
-    const platform = await claude.getPlatform();
+    homeDir = await manifold.getHomeDir() || '/';
+    const platform = await manifold.getPlatform();
     const isMac = platform === 'darwin';
     document.body.classList.add(`platform-${platform}`);
 
@@ -1086,7 +1086,7 @@ function escAttr(str) {
     const loaded = await loadState();
 
     // Apply saved UI scale
-    const savedState = await claude.loadState();
+    const savedState = await manifold.loadState();
     if (savedState && savedState.uiScale) {
       applyScale(savedState.uiScale);
     }

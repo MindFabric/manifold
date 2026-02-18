@@ -1,7 +1,7 @@
 {
-  "name": "claude-sidebar",
+  "name": "manifold",
   "version": "1.0.0",
-  "description": "Claude Code Sidebar - Cross-platform workspace manager for Claude Code",
+  "description": "Manifold — workspace manager for Claude Code",
   "main": "main.js",
   "scripts": {
     "postinstall": "electron-rebuild",
@@ -19,8 +19,8 @@
     "workspace"
   ],
   "author": {
-    "name": "Claude Sidebar",
-    "email": "claude-sidebar@users.noreply.github.com"
+    "name": "Manifold",
+    "email": "manifold@users.noreply.github.com"
   },
   "license": "MIT",
   "dependencies": {
@@ -34,8 +34,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.claude.sidebar",
-    "productName": "Claude Sidebar",
+    "appId": "ai.manifold.app",
+    "productName": "Manifold",
     "files": [
       "main.js",
       "journal.js",

@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="assets/icon.png" alt="Claude Sidebar" width="128" height="128">
+  <img src="assets/icon.png" alt="Manifold" width="128" height="128">
 </p>
 
-<h1 align="center">Claude Sidebar</h1>
+<h1 align="center">Manifold</h1>
 
 <p align="center">
-  A workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Organize multiple Claude sessions into collections, monitor them side-by-side in grid view, and let an automatic dev journal track what you worked on.
+  A workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Run multiple sessions in parallel, organize them into collections, monitor everything in grid view, and let an automatic dev journal track what you built.
 </p>
 
 <p align="center">
-  <a href="https://github.com/MindFabric/claude-sidebar-electron/releases/latest">Download for Linux, macOS, or Windows</a>
+  <a href="https://github.com/MindFabric/manifold/releases/latest">Download for Linux, macOS, or Windows</a>
 </p>
 
 ---
@@ -24,7 +24,7 @@
 
 **Dev journal** — A background process captures terminal activity across all sessions and summarizes it every 5 minutes into a daily markdown file (`~/Documents/journal/`). Open the built-in journal viewer with `Ctrl+J` to browse past entries by date.
 
-**Conversation tracking** — Claude Sidebar detects when Claude Code starts a new conversation and saves the ID. Close a tab, reopen it later, and you can resume exactly where you left off.
+**Conversation tracking** — Manifold detects when Claude Code starts a new conversation and saves the ID. Close a tab, reopen it later, and you can resume exactly where you left off.
 
 **State persistence** — Collections, tabs, working directories, conversation IDs, and UI preferences are saved automatically and restored on launch.
 
@@ -48,7 +48,7 @@ On macOS, `Cmd` replaces `Ctrl` where applicable.
 
 ## Install
 
-Grab the latest build from [Releases](https://github.com/MindFabric/claude-sidebar-electron/releases/latest) for your platform.
+Grab the latest build from [Releases](https://github.com/MindFabric/manifold/releases/latest) for your platform.
 
 ### Prerequisites
 
@@ -59,16 +59,16 @@ Grab the latest build from [Releases](https://github.com/MindFabric/claude-sideb
 
 ```bash
 # AppImage
-chmod +x Claude-Sidebar-*.AppImage
-./Claude-Sidebar-*.AppImage
+chmod +x Manifold-*.AppImage
+./Manifold-*.AppImage
 
 # Or install the .deb
-sudo dpkg -i claude-sidebar_*.deb
+sudo dpkg -i manifold_*.deb
 ```
 
 ### macOS
 
-Open the `.dmg` and drag Claude Sidebar to Applications.
+Open the `.dmg` and drag Manifold to Applications.
 
 ### Windows
 
@@ -77,8 +77,8 @@ Run the `.exe` installer, or use the portable `.exe` directly.
 ## Build from source
 
 ```bash
-git clone https://github.com/MindFabric/claude-sidebar-electron.git
-cd claude-sidebar-electron
+git clone https://github.com/MindFabric/manifold.git
+cd manifold
 npm install
 npm start              # run in development
 npm run build:linux    # package for Linux
@@ -92,7 +92,7 @@ Requires Node.js 20+ and npm.
 
 | Environment variable | Default | Description |
 |---------------------|---------|-------------|
-| `CLAUDE_SIDEBAR_CMD` | `claude --dangerously-skip-permissions` | Shell command launched in each terminal session |
+| `MANIFOLD_CMD` | `claude --dangerously-skip-permissions` | Shell command launched in each terminal session |
 
 ## How the journal works
 
