@@ -35,6 +35,14 @@
 
       <!-- Collections list -->
       <div id="collections-list"></div>
+
+      <!-- Journal footer -->
+      <div id="journal-bar">
+        <button id="journal-btn" title="Open today's dev journal">
+          <span id="journal-icon">&#9783;</span>
+          <span>Journal</span>
+        </button>
+      </div>
     </div>
 
     <!-- Content area -->
@@ -51,6 +59,30 @@
             <button id="settings-close-btn">&times;</button>
           </div>
           <div id="settings-body">
+            <div class="settings-section">
+              <div class="settings-section-title">JOURNAL</div>
+              <button id="settings-journal-open" class="settings-row-btn">
+                <div class="settings-row-btn-text">
+                  <span class="settings-label">Open Today's Journal</span>
+                  <span class="settings-desc">View the auto-generated dev journal for today.</span>
+                </div>
+                <span class="settings-row-arrow">&rsaquo;</span>
+              </button>
+              <button id="settings-journal-dir" class="settings-row-btn">
+                <div class="settings-row-btn-text">
+                  <span class="settings-label">Journal Directory</span>
+                  <span class="settings-desc">Open ~/Documents/claude-journal/ in file manager.</span>
+                </div>
+                <span class="settings-row-arrow">&rsaquo;</span>
+              </button>
+              <button id="settings-journal-flush" class="settings-row-btn">
+                <div class="settings-row-btn-text">
+                  <span class="settings-label">Write Entry Now</span>
+                  <span class="settings-desc">Summarize current activity and write a journal entry immediately.</span>
+                </div>
+                <span class="settings-row-arrow">&rsaquo;</span>
+              </button>
+            </div>
             <div class="settings-section">
               <div class="settings-section-title">DATA</div>
               <button id="nuke-btn" class="settings-row-btn settings-row-btn-nuke">

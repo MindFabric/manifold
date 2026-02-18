@@ -39,7 +39,7 @@ function getActiveTab() {
 }
 
 // ── Terminal creation ──
-function createTerminalInstance(tabId, cwd, conversationId) {
+function createTerminalInstance(tabId, cwd, conversationId, name) {
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 50000,
@@ -79,7 +79,7 @@ function createTerminalInstance(tabId, cwd, conversationId) {
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
   // Spawn backend pty — pass conversationId for --resume if available
-  claude.createTerminal({ id: tabId, cwd, conversationId: conversationId || null });
+  claude.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId });
 
   // Pipe input to pty
   term.onData((data) => claude.sendInput(tabId, data));
@@ -402,7 +402,7 @@ function addSession(ci, cwd = null) {
   const name = `Session ${col.tabs.length + 1}`;
 
   col.tabs.push({ id: tabId, name, cwd: dir });
-  createTerminalInstance(tabId, dir, null);
+  createTerminalInstance(tabId, dir, null, name);
 
   col.expanded = true;
   selectTab(ci, col.tabs.length - 1);
@@ -468,7 +468,7 @@ async function addCollection(askPath = false) {
   if (askPath) {
     const tabId = genTabId();
     col.tabs.push({ id: tabId, name: 'Session 1', cwd: folderPath });
-    createTerminalInstance(tabId, folderPath, null);
+    createTerminalInstance(tabId, folderPath, null, 'Session 1');
     selectTab(ci, 0);
   }
 
@@ -656,7 +656,7 @@ async function loadState() {
         conversationId: tabData.conversationId || null,
       });
       // Resume specific conversation if we have its ID, otherwise start fresh
-      createTerminalInstance(tabId, cwd, tabData.conversationId || null);
+      createTerminalInstance(tabId, cwd, tabData.conversationId || null, tabData.name || 'Session');
     }
 
     state.collections.push(col);
@@ -791,6 +791,32 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
 });
 
+// ── Journal buttons ──
+document.getElementById('journal-btn').addEventListener('click', () => {
+  claude.openJournal();
+});
+document.getElementById('settings-journal-open').addEventListener('click', () => {
+  claude.openJournal();
+});
+document.getElementById('settings-journal-dir').addEventListener('click', () => {
+  claude.openJournalDir();
+});
+document.getElementById('settings-journal-flush').addEventListener('click', async () => {
+  const btn = document.getElementById('settings-journal-flush');
+  const label = btn.querySelector('.settings-label');
+  const origText = label.textContent;
+  label.textContent = 'Writing...';
+  btn.disabled = true;
+  try {
+    await claude.flushJournal();
+    label.textContent = 'Done!';
+    setTimeout(() => { label.textContent = origText; btn.disabled = false; }, 2000);
+  } catch (err) {
+    label.textContent = 'Failed';
+    setTimeout(() => { label.textContent = origText; btn.disabled = false; }, 2000);
+  }
+});
+
 document.getElementById('nuke-btn').addEventListener('click', async () => {
   if (!confirm('Factory reset — clear all saved state and start fresh?')) return;
   if (!confirm('Last chance. Reset everything?')) return;
@@ -828,7 +854,7 @@ function escAttr(str) {
         expanded: true,
         tabs: [{ id: gTabId, name: 'Session 1', cwd: homeDir }],
       });
-      createTerminalInstance(gTabId, homeDir, null);
+      createTerminalInstance(gTabId, homeDir, null, 'Session 1');
     }
 
     if (loaded) {

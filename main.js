@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, shell } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
+const journal = require('./journal');
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -85,7 +86,7 @@ ipcMain.handle('get-platform', () => process.platform);
 
 // ── Terminal management ──
 
-ipcMain.handle('terminal-create', (event, { id, cwd, conversationId }) => {
+ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name }) => {
   const home = os.homedir();
   const dir = cwd || home;
 
@@ -138,6 +139,9 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId }) => {
       windowStart = now;
     }
     dataBytes += data.length;
+
+    // Feed journal with terminal output
+    journal.feed(id, name || id, data);
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal-data', { id, data });
@@ -213,6 +217,7 @@ ipcMain.on('terminal-destroy', (event, { id }) => {
     if (term.convoCheck) clearInterval(term.convoCheck);
     try { term.pty.kill(); } catch (_) {}
     terminals.delete(id);
+    journal.removeTerminal(id);
   }
 });
 
@@ -274,6 +279,34 @@ ipcMain.handle('load-state', () => {
   }
 });
 
+// ── Journal ──
+
+ipcMain.handle('journal-open', () => {
+  const journalPath = journal.getJournalPath();
+  fs.mkdirSync(journal.JOURNAL_DIR, { recursive: true });
+  // Create today's file if it doesn't exist yet
+  if (!fs.existsSync(journalPath)) {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+    fs.writeFileSync(journalPath, `# ${dateStr}\n\n`);
+  }
+  shell.openPath(journalPath);
+  return journalPath;
+});
+
+ipcMain.handle('journal-open-dir', () => {
+  fs.mkdirSync(journal.JOURNAL_DIR, { recursive: true });
+  shell.openPath(journal.JOURNAL_DIR);
+  return journal.JOURNAL_DIR;
+});
+
+ipcMain.handle('journal-flush', async () => {
+  await journal.summarize();
+  return true;
+});
+
 // ── Folder picker ──
 
 ipcMain.handle('pick-folder', async () => {
@@ -331,6 +364,7 @@ app.whenReady().then(() => {
   }
 
   createWindow();
+  journal.start();
 
   const toggleKey = IS_MAC ? 'Command+Shift+C' : 'Super+C';
   globalShortcut.register(toggleKey, () => {
@@ -360,6 +394,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  journal.stop();
   destroyAllTerminals();
   globalShortcut.unregisterAll();
 });
