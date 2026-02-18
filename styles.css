@@ -497,17 +497,32 @@ body {
 #journal-header-btns {
   display: flex;
   gap: 4px;
+  align-items: center;
 }
-#journal-header-btns button {
+.journal-action-btn {
+  color: #555;
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  font-family: inherit;
+  padding: 3px 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.journal-action-btn:hover { color: #D97757; border-color: #D97757; }
+.journal-action-btn:disabled { opacity: 0.4; cursor: default; }
+#journal-close-btn {
   color: #555;
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 20px;
   padding: 2px 6px;
+  margin-left: 4px;
 }
-#journal-header-btns button:hover { color: #D97757; }
-#journal-close-btn { font-size: 20px; }
+#journal-close-btn:hover { color: #d0d0d0; }
 
 #journal-body {
   flex: 1;
@@ -567,34 +582,47 @@ body {
   gap: 2px;
 }
 .jcal-day {
-  color: #555;
+  color: #444;
   font-size: 11px;
   text-align: center;
   padding: 5px 0;
   border-radius: 4px;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
 }
+.jcal-day:hover {
+  background: #222;
+  color: #888;
+}
 .jcal-day.has-entry {
-  color: #aaa;
-  cursor: pointer;
-  background: #1e1e1e;
+  color: #d0d0d0;
+  background: #252218;
+  font-weight: bold;
 }
 .jcal-day.has-entry:hover {
   background: #2a2520;
   color: #D97757;
 }
 .jcal-day.selected {
-  background: #D97757;
-  color: #1a1a1a;
+  background: #D97757 !important;
+  color: #1a1a1a !important;
   font-weight: bold;
 }
 .jcal-day.today {
   outline: 1px solid #D97757;
   outline-offset: -1px;
 }
+.jcal-day.future {
+  color: #333;
+  cursor: default;
+}
+.jcal-day.future:hover {
+  background: transparent;
+  color: #333;
+}
 .jcal-day.empty {
   visibility: hidden;
+  cursor: default;
 }
 
 /* Day list below calendar */

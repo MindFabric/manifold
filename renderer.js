@@ -887,11 +887,13 @@ function renderJournalCalendar() {
     cell.className = 'jcal-day';
     cell.textContent = d;
 
+    const isFuture = dateStr > today;
     if (journalDates.has(dateStr)) cell.classList.add('has-entry');
     if (dateStr === today) cell.classList.add('today');
+    if (isFuture) cell.classList.add('future');
     if (dateStr === journalSelectedDate) cell.classList.add('selected');
 
-    if (journalDates.has(dateStr)) {
+    if (!isFuture) {
       cell.addEventListener('click', () => selectJournalDate(dateStr));
     }
 
@@ -993,9 +995,10 @@ document.getElementById('journal-cal-next').addEventListener('click', () => {
 document.getElementById('journal-flush-btn').addEventListener('click', async () => {
   const btn = document.getElementById('journal-flush-btn');
   btn.disabled = true;
-  btn.textContent = '...';
+  btn.textContent = 'writing...';
   try {
     await claude.flushJournal();
+    btn.textContent = 'done!';
     // Refresh view
     const dates = await claude.listJournalDates();
     journalDates = new Set(dates);
@@ -1003,9 +1006,10 @@ document.getElementById('journal-flush-btn').addEventListener('click', async () 
     renderJournalDayList();
     const today = todayStr();
     if (journalDates.has(today)) selectJournalDate(today);
-  } catch (_) {}
-  btn.textContent = '\u270E';
-  btn.disabled = false;
+  } catch (_) {
+    btn.textContent = 'failed';
+  }
+  setTimeout(() => { btn.textContent = 'write now'; btn.disabled = false; }, 1500);
 });
 document.getElementById('journal-ext-btn').addEventListener('click', () => claude.openJournalExternal());
 document.getElementById('journal-dir-btn').addEventListener('click', () => claude.openJournalDir());
