@@ -49,6 +49,7 @@ function createWindow() {
     width: 1920,
     height: 1080,
     frame: false,
+    icon: path.join(__dirname, 'icon.png'),
     backgroundColor: '#1a1a1a',
     titleBarStyle: IS_MAC ? 'hiddenInset' : 'default',
     webPreferences: {
