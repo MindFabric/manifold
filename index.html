@@ -51,6 +51,46 @@
       <div id="terminal-single"></div>
       <!-- Grid view -->
       <div id="terminal-grid" class="hidden"></div>
+      <!-- Journal viewer -->
+      <div id="journal-overlay" class="hidden">
+        <div id="journal-viewer">
+          <div id="journal-header">
+            <span id="journal-title">JOURNAL</span>
+            <div id="journal-header-btns">
+              <button id="journal-flush-btn" title="Write entry now">&#9998;</button>
+              <button id="journal-ext-btn" title="Open in editor">&#8599;</button>
+              <button id="journal-dir-btn" title="Open journal folder">&#128193;</button>
+              <button id="journal-close-btn">&times;</button>
+            </div>
+          </div>
+          <div id="journal-body">
+            <div id="journal-calendar-pane">
+              <div id="journal-cal-nav">
+                <button id="journal-cal-prev">&lsaquo;</button>
+                <span id="journal-cal-month-label"></span>
+                <button id="journal-cal-next">&rsaquo;</button>
+              </div>
+              <div id="journal-cal-grid">
+                <div class="jcal-dow">Su</div>
+                <div class="jcal-dow">Mo</div>
+                <div class="jcal-dow">Tu</div>
+                <div class="jcal-dow">We</div>
+                <div class="jcal-dow">Th</div>
+                <div class="jcal-dow">Fr</div>
+                <div class="jcal-dow">Sa</div>
+              </div>
+              <div id="journal-cal-days"></div>
+              <div id="journal-day-list"></div>
+            </div>
+            <div id="journal-content-pane">
+              <div id="journal-content-date"></div>
+              <div id="journal-content-body">
+                <p class="journal-empty">Select a day to view its journal entry.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
       <!-- Settings modal -->
       <div id="settings-overlay" class="hidden">
         <div id="settings-modal">

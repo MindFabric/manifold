@@ -457,6 +457,234 @@ body {
   border-color: #444;
 }
 
+/* ── Journal viewer ── */
+#journal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 15;
+}
+#journal-viewer {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 900px;
+  height: 80%;
+  max-height: 700px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+#journal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+#journal-title {
+  color: #D97757;
+  font-weight: bold;
+  font-size: 12px;
+  letter-spacing: 2px;
+}
+#journal-header-btns {
+  display: flex;
+  gap: 4px;
+}
+#journal-header-btns button {
+  color: #555;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+}
+#journal-header-btns button:hover { color: #D97757; }
+#journal-close-btn { font-size: 20px; }
+
+#journal-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Calendar pane (left) */
+#journal-calendar-pane {
+  width: 240px;
+  min-width: 240px;
+  border-right: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#journal-cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #222;
+}
+#journal-cal-nav button {
+  color: #666;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+#journal-cal-nav button:hover { color: #D97757; background: #222; }
+#journal-cal-month-label {
+  color: #999;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+#journal-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 6px 8px 0;
+  gap: 0;
+}
+.jcal-dow {
+  color: #444;
+  font-size: 9px;
+  text-align: center;
+  padding: 4px 0;
+  font-weight: bold;
+}
+#journal-cal-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 2px 8px 8px;
+  gap: 2px;
+}
+.jcal-day {
+  color: #555;
+  font-size: 11px;
+  text-align: center;
+  padding: 5px 0;
+  border-radius: 4px;
+  cursor: default;
+  user-select: none;
+}
+.jcal-day.has-entry {
+  color: #aaa;
+  cursor: pointer;
+  background: #1e1e1e;
+}
+.jcal-day.has-entry:hover {
+  background: #2a2520;
+  color: #D97757;
+}
+.jcal-day.selected {
+  background: #D97757;
+  color: #1a1a1a;
+  font-weight: bold;
+}
+.jcal-day.today {
+  outline: 1px solid #D97757;
+  outline-offset: -1px;
+}
+.jcal-day.empty {
+  visibility: hidden;
+}
+
+/* Day list below calendar */
+#journal-day-list {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 1px solid #222;
+  padding: 4px 0;
+}
+.jday-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: #888;
+  font-size: 11px;
+}
+.jday-item:hover { background: #1e1e1e; color: #D97757; }
+.jday-item.selected { background: #2a2520; color: #D97757; font-weight: bold; }
+.jday-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #D97757;
+  flex-shrink: 0;
+}
+
+/* Content pane (right) */
+#journal-content-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#journal-content-date {
+  padding: 10px 16px;
+  border-bottom: 1px solid #222;
+  color: #D97757;
+  font-size: 12px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+#journal-content-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  color: #bbb;
+  font-size: 13px;
+  line-height: 1.7;
+}
+#journal-content-body h1 {
+  color: #D97757;
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+#journal-content-body h2 {
+  color: #D97757;
+  font-size: 14px;
+  margin: 16px 0 6px;
+}
+#journal-content-body h3 {
+  color: #999;
+  font-size: 12px;
+  margin: 12px 0 4px;
+  font-weight: normal;
+}
+#journal-content-body ul {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+#journal-content-body li {
+  margin: 2px 0;
+  color: #bbb;
+}
+#journal-content-body hr {
+  border: none;
+  border-top: 1px solid #2a2a2a;
+  margin: 12px 0;
+}
+#journal-content-body p {
+  margin: 6px 0;
+}
+.journal-empty {
+  color: #444;
+  font-style: italic;
+  text-align: center;
+  margin-top: 40px;
+}
+
 /* ── Settings button ── */
 #settings-btn {
   color: #444;

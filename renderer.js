@@ -711,6 +711,30 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
+  // Ctrl/Cmd+J: toggle journal viewer
+  if (ctrl && e.key === 'j') {
+    e.preventDefault();
+    if (journalOverlay.classList.contains('hidden')) {
+      openJournalViewer();
+    } else {
+      closeJournalViewer();
+    }
+  }
+
+  // Escape: close overlays
+  if (e.key === 'Escape') {
+    if (!journalOverlay.classList.contains('hidden')) {
+      closeJournalViewer();
+      e.preventDefault();
+      return;
+    }
+    if (!settingsOverlay.classList.contains('hidden')) {
+      settingsOverlay.classList.add('hidden');
+      e.preventDefault();
+      return;
+    }
+  }
+
   // Alt+1-9: switch globally across all collections
   if (e.altKey && e.key >= '1' && e.key <= '9') {
     e.preventDefault();
@@ -791,16 +815,207 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
 });
 
-// ── Journal buttons ──
-document.getElementById('journal-btn').addEventListener('click', () => {
-  claude.openJournal();
+// ── Journal viewer ──
+const journalOverlay = document.getElementById('journal-overlay');
+const journalCalDays = document.getElementById('journal-cal-days');
+const journalCalMonthLabel = document.getElementById('journal-cal-month-label');
+const journalDayList = document.getElementById('journal-day-list');
+const journalContentDate = document.getElementById('journal-content-date');
+const journalContentBody = document.getElementById('journal-content-body');
+
+let journalDates = new Set(); // dates with entries: '2026-02-17'
+let journalViewMonth = new Date(); // currently viewed month
+let journalSelectedDate = null; // currently selected date string
+
+function padZ(n) { return n < 10 ? '0' + n : '' + n; }
+
+function toDateStr(d) {
+  return `${d.getFullYear()}-${padZ(d.getMonth() + 1)}-${padZ(d.getDate())}`;
+}
+
+function todayStr() { return toDateStr(new Date()); }
+
+async function openJournalViewer() {
+  journalOverlay.classList.remove('hidden');
+  // Load available dates
+  const dates = await claude.listJournalDates();
+  journalDates = new Set(dates);
+  journalViewMonth = new Date();
+  journalSelectedDate = null;
+  renderJournalCalendar();
+  renderJournalDayList();
+  // Auto-select today if it has an entry
+  const today = todayStr();
+  if (journalDates.has(today)) {
+    selectJournalDate(today);
+  } else if (dates.length > 0) {
+    selectJournalDate(dates[0]); // most recent
+  } else {
+    journalContentDate.textContent = '';
+    journalContentBody.innerHTML = '<p class="journal-empty">No journal entries yet. Activity is recorded automatically as you work.</p>';
+  }
+}
+
+function closeJournalViewer() {
+  journalOverlay.classList.add('hidden');
+}
+
+function renderJournalCalendar() {
+  const year = journalViewMonth.getFullYear();
+  const month = journalViewMonth.getMonth();
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  journalCalMonthLabel.textContent = `${monthNames[month]} ${year}`;
+
+  journalCalDays.innerHTML = '';
+
+  const firstDay = new Date(year, month, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = todayStr();
+
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'jcal-day empty';
+    journalCalDays.appendChild(cell);
+  }
+
+  // Day cells
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${padZ(month + 1)}-${padZ(d)}`;
+    const cell = document.createElement('div');
+    cell.className = 'jcal-day';
+    cell.textContent = d;
+
+    if (journalDates.has(dateStr)) cell.classList.add('has-entry');
+    if (dateStr === today) cell.classList.add('today');
+    if (dateStr === journalSelectedDate) cell.classList.add('selected');
+
+    if (journalDates.has(dateStr)) {
+      cell.addEventListener('click', () => selectJournalDate(dateStr));
+    }
+
+    journalCalDays.appendChild(cell);
+  }
+}
+
+function renderJournalDayList() {
+  journalDayList.innerHTML = '';
+  const sortedDates = [...journalDates].sort().reverse();
+
+  for (const dateStr of sortedDates) {
+    const d = new Date(dateStr + 'T12:00:00');
+    const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+    const item = document.createElement('div');
+    item.className = 'jday-item';
+    if (dateStr === journalSelectedDate) item.classList.add('selected');
+    item.innerHTML = `<span class="jday-dot"></span><span>${label}</span>`;
+    item.addEventListener('click', () => selectJournalDate(dateStr));
+    journalDayList.appendChild(item);
+  }
+}
+
+async function selectJournalDate(dateStr) {
+  journalSelectedDate = dateStr;
+
+  // Update calendar selection
+  journalCalDays.querySelectorAll('.jcal-day').forEach(c => c.classList.remove('selected'));
+  journalCalDays.querySelectorAll('.jcal-day').forEach(c => {
+    // Find matching cell by checking date
+    const d = new Date(dateStr + 'T12:00:00');
+    const viewYear = journalViewMonth.getFullYear();
+    const viewMonth = journalViewMonth.getMonth();
+    if (d.getFullYear() === viewYear && d.getMonth() === viewMonth && parseInt(c.textContent) === d.getDate()) {
+      c.classList.add('selected');
+    }
+  });
+
+  // Update day list selection
+  journalDayList.querySelectorAll('.jday-item').forEach(el => el.classList.remove('selected'));
+  journalDayList.querySelectorAll('.jday-item').forEach((el, i) => {
+    const sortedDates = [...journalDates].sort().reverse();
+    if (sortedDates[i] === dateStr) el.classList.add('selected');
+  });
+
+  // Load and render content
+  const d = new Date(dateStr + 'T12:00:00');
+  journalContentDate.textContent = d.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+
+  const content = await claude.readJournal(dateStr);
+  if (content) {
+    journalContentBody.innerHTML = renderMarkdown(content);
+  } else {
+    journalContentBody.innerHTML = '<p class="journal-empty">No entry for this date.</p>';
+  }
+}
+
+// Simple markdown renderer for journal entries
+function renderMarkdown(md) {
+  return md
+    .split('\n')
+    .map(line => {
+      if (/^### (.+)/.test(line)) return `<h3>${escHtml(line.replace(/^### /, ''))}</h3>`;
+      if (/^## (.+)/.test(line)) return `<h2>${escHtml(line.replace(/^## /, ''))}</h2>`;
+      if (/^# (.+)/.test(line)) return `<h1>${escHtml(line.replace(/^# /, ''))}</h1>`;
+      if (/^---\s*$/.test(line)) return '<hr>';
+      if (/^- (.+)/.test(line)) return `<li>${escHtml(line.replace(/^- /, ''))}</li>`;
+      if (line.trim() === '') return '';
+      return `<p>${escHtml(line)}</p>`;
+    })
+    .join('\n')
+    // Wrap consecutive <li> in <ul>
+    .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+}
+
+// Journal button opens viewer
+document.getElementById('journal-btn').addEventListener('click', () => openJournalViewer());
+
+// Close journal viewer
+document.getElementById('journal-close-btn').addEventListener('click', closeJournalViewer);
+journalOverlay.addEventListener('click', (e) => {
+  if (e.target === journalOverlay) closeJournalViewer();
 });
+
+// Calendar navigation
+document.getElementById('journal-cal-prev').addEventListener('click', () => {
+  journalViewMonth.setMonth(journalViewMonth.getMonth() - 1);
+  renderJournalCalendar();
+});
+document.getElementById('journal-cal-next').addEventListener('click', () => {
+  journalViewMonth.setMonth(journalViewMonth.getMonth() + 1);
+  renderJournalCalendar();
+});
+
+// Journal header buttons
+document.getElementById('journal-flush-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('journal-flush-btn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    await claude.flushJournal();
+    // Refresh view
+    const dates = await claude.listJournalDates();
+    journalDates = new Set(dates);
+    renderJournalCalendar();
+    renderJournalDayList();
+    const today = todayStr();
+    if (journalDates.has(today)) selectJournalDate(today);
+  } catch (_) {}
+  btn.textContent = '\u270E';
+  btn.disabled = false;
+});
+document.getElementById('journal-ext-btn').addEventListener('click', () => claude.openJournalExternal());
+document.getElementById('journal-dir-btn').addEventListener('click', () => claude.openJournalDir());
+
+// Settings journal buttons (point to viewer now)
 document.getElementById('settings-journal-open').addEventListener('click', () => {
-  claude.openJournal();
+  settingsOverlay.classList.add('hidden');
+  openJournalViewer();
 });
-document.getElementById('settings-journal-dir').addEventListener('click', () => {
-  claude.openJournalDir();
-});
+document.getElementById('settings-journal-dir').addEventListener('click', () => claude.openJournalDir());
 document.getElementById('settings-journal-flush').addEventListener('click', async () => {
   const btn = document.getElementById('settings-journal-flush');
   const label = btn.querySelector('.settings-label');
@@ -843,7 +1058,7 @@ function escAttr(str) {
     const mod = isMac ? 'Cmd' : 'Ctrl';
     const toggle = isMac ? 'Cmd+Shift+C' : 'Super+C';
     document.getElementById('header-hints').textContent =
-      `${toggle} toggle | ${mod}+T new session | ${mod}+P open in path | ${mod}+W close | ${mod}+G grid | Alt+1-9 switch`;
+      `${toggle} toggle | ${mod}+T new | ${mod}+P path | ${mod}+W close | ${mod}+G grid | ${mod}+J journal | Alt+1-9 switch`;
 
     const loaded = await loadState();
     if (!loaded) {
