@@ -55,9 +55,10 @@ function hasContent() {
   return false;
 }
 
-function collectAndClear() {
+function collect() {
   const sections = [];
-  for (const [, buf] of buffers) {
+  const snapshotCounts = new Map();
+  for (const [id, buf] of buffers) {
     if (buf.lines.length === 0) continue;
     // Dedupe consecutive identical lines (common with progress bars etc.)
     const deduped = [];
@@ -66,14 +67,24 @@ function collectAndClear() {
       if (line !== prev) { deduped.push(line); prev = line; }
     }
     sections.push(`[${buf.name}]\n${deduped.slice(-200).join('\n')}`);
-    buf.lines = [];
+    snapshotCounts.set(id, buf.lines.length);
   }
-  return sections;
+  return { sections, snapshotCounts };
+}
+
+function clearCollected(snapshotCounts) {
+  for (const [id, count] of snapshotCounts) {
+    const buf = buffers.get(id);
+    if (buf) {
+      // Only remove the lines we snapshotted; keep any new lines that arrived since
+      buf.lines = buf.lines.slice(count);
+    }
+  }
 }
 
 function callClaude(prompt) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', ['-p', prompt], {
+    const proc = spawn('claude', ['-p'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     });
@@ -98,13 +109,17 @@ function callClaude(prompt) {
       clearTimeout(timeout);
       reject(err);
     });
+
+    // Pipe prompt via stdin instead of CLI argument to handle large output
+    proc.stdin.write(prompt);
+    proc.stdin.end();
   });
 }
 
 async function summarize() {
   if (!hasContent()) return;
 
-  const sections = collectAndClear();
+  const { sections, snapshotCounts } = collect();
   if (sections.length === 0) return;
 
   const context = sections.join('\n\n---\n\n');
@@ -121,25 +136,35 @@ async function summarize() {
 Terminal activity:
 ${context}`;
 
+  const journalPath = getJournalPath();
+  fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+
+  // Create file with date header if new
+  if (!fs.existsSync(journalPath)) {
+    const dateStr = now.toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+    fs.writeFileSync(journalPath, `# ${dateStr}\n\n`);
+  }
+
   try {
-    const journalPath = getJournalPath();
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-
-    // Create file with date header if new
-    if (!fs.existsSync(journalPath)) {
-      const dateStr = now.toLocaleDateString('en-US', {
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      });
-      fs.writeFileSync(journalPath, `# ${dateStr}\n\n`);
-    }
-
     const result = await callClaude(prompt);
     if (result && result.trim() && result.trim() !== '- Idle') {
       const entry = `### ${time}\n\n${result.trim()}\n\n---\n\n`;
       fs.appendFileSync(journalPath, entry);
     }
+    // Only clear buffers after successful summarization
+    clearCollected(snapshotCounts);
   } catch (err) {
     console.error('Journal summarize failed:', err.message);
+    // Fallback: write a raw activity note so the day isn't empty
+    const termNames = sections.map(s => s.split('\n')[0]).join(', ');
+    const fallback = `### ${time}\n\n- Active in: ${termNames}\n- (auto-summary unavailable)\n\n---\n\n`;
+    try {
+      fs.appendFileSync(journalPath, fallback);
+    } catch (_) {}
+    // Still clear buffers to avoid infinite retry of the same failing data
+    clearCollected(snapshotCounts);
   }
 }
 
