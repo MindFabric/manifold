@@ -282,14 +282,24 @@ ipcMain.handle('load-state', () => {
 // ── Journal ──
 
 // List all journal dates that have .md files -> ['2026-02-17', '2026-02-16', ...]
+// Scans month subdirectories: journal/YYYY-MM/YYYY-MM-DD.md
 ipcMain.handle('journal-list-dates', () => {
   try {
     fs.mkdirSync(journal.JOURNAL_DIR, { recursive: true });
-    return fs.readdirSync(journal.JOURNAL_DIR)
-      .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
-      .map(f => f.replace('.md', ''))
-      .sort()
-      .reverse();
+    const dates = [];
+    const monthDirs = fs.readdirSync(journal.JOURNAL_DIR)
+      .filter(d => /^\d{4}-\d{2}$/.test(d));
+    for (const monthDir of monthDirs) {
+      const full = path.join(journal.JOURNAL_DIR, monthDir);
+      try {
+        const files = fs.readdirSync(full)
+          .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f));
+        for (const f of files) {
+          dates.push(f.replace('.md', ''));
+        }
+      } catch (_) {}
+    }
+    return dates.sort().reverse();
   } catch (_) {
     return [];
   }
@@ -298,7 +308,8 @@ ipcMain.handle('journal-list-dates', () => {
 // Read a specific journal file by date string 'YYYY-MM-DD'
 ipcMain.handle('journal-read', (event, dateStr) => {
   try {
-    const filePath = path.join(journal.JOURNAL_DIR, `${dateStr}.md`);
+    const monthDir = dateStr.substring(0, 7); // 'YYYY-MM'
+    const filePath = path.join(journal.JOURNAL_DIR, monthDir, `${dateStr}.md`);
     if (!fs.existsSync(filePath)) return null;
     return fs.readFileSync(filePath, 'utf-8');
   } catch (_) {

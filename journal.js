@@ -3,7 +3,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 
-const JOURNAL_DIR = path.join(os.homedir(), 'Documents', 'claude-journal');
+const JOURNAL_DIR = path.join(os.homedir(), 'Documents', 'journal');
 const BUFFER_MAX_LINES = 400;
 const SUMMARIZE_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -41,8 +41,11 @@ function removeTerminal(terminalId) {
 
 function getJournalPath(date) {
   const d = date || new Date();
-  const stamp = d.toISOString().split('T')[0]; // YYYY-MM-DD
-  return path.join(JOURNAL_DIR, `${stamp}.md`);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const monthDir = path.join(JOURNAL_DIR, `${year}-${month}`);
+  return path.join(monthDir, `${year}-${month}-${day}.md`);
 }
 
 function hasContent() {
@@ -119,8 +122,8 @@ Terminal activity:
 ${context}`;
 
   try {
-    fs.mkdirSync(JOURNAL_DIR, { recursive: true });
     const journalPath = getJournalPath();
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
 
     // Create file with date header if new
     if (!fs.existsSync(journalPath)) {
