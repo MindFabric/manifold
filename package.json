@@ -35,6 +35,7 @@
     "productName": "Claude Sidebar",
     "files": [
       "main.js",
+      "journal.js",
       "preload.js",
       "renderer.js",
       "index.html",
@@ -56,7 +57,7 @@
         "zip"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.icns",
+      "icon": "assets/icon.png",
       "hardenedRuntime": false
     },
     "win": {

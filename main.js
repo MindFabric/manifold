@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -48,9 +48,14 @@ function winToWslPath(winPath) {
 }
 
 function createWindow() {
+  const primary = screen.getPrimaryDisplay();
+  const { x, y, width, height } = primary.workArea;
+
   mainWindow = new BrowserWindow({
-    width: 1920,
-    height: 1080,
+    x,
+    y,
+    width,
+    height,
     frame: false,
     icon: path.join(__dirname, 'icon.png'),
     backgroundColor: '#1a1a1a',

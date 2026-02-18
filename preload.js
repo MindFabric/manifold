@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('claude', {
   // Environment
@@ -30,4 +30,8 @@ contextBridge.exposeInMainWorld('claude', {
   // Journal
   listJournalDates: () => ipcRenderer.invoke('journal-list-dates'),
   readJournal: (dateStr) => ipcRenderer.invoke('journal-read', dateStr),
+
+  // UI Scale
+  setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
+  getZoomFactor: () => webFrame.getZoomFactor(),
 });

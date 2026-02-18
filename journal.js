@@ -96,9 +96,13 @@ function clearCollected(snapshotCounts) {
 
 function callClaude(prompt) {
   return new Promise((resolve, reject) => {
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDECODE;
+    delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+
     const proc = spawn('claude', ['-p'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: cleanEnv,
     });
 
     let stdout = '';

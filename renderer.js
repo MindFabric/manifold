@@ -638,6 +638,7 @@ async function saveState() {
     })),
     activeCollection: state.activeCollectionIdx,
     activeTab: state.activeTabIdx,
+    uiScale: parseInt(scaleSlider.value) || 100,
   };
   await claude.saveState(data);
 }
@@ -687,42 +688,43 @@ async function loadState() {
 }
 
 // ── Keybindings ──
+// Use capture phase so shortcuts fire before xterm swallows keys like Ctrl+3 (ESC)
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
+  let handled = false;
 
   if (ctrl && e.key === 't') {
-    e.preventDefault();
     const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
     if (state.collections[ci]) addSession(ci);
+    handled = true;
   }
 
   if (ctrl && e.key === 'w') {
-    e.preventDefault();
     if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) {
       closeSession(state.activeCollectionIdx, state.activeTabIdx);
     }
+    handled = true;
   }
 
   if (ctrl && e.key === 'p') {
-    e.preventDefault();
     addCollection(true);
+    handled = true;
   }
 
   if (ctrl && e.key === 'y') {
-    e.preventDefault();
     addCollection(true);
+    handled = true;
   }
 
   if (ctrl && e.key === 'g') {
-    e.preventDefault();
     if (state.activeCollectionIdx >= 0) {
       toggleGrid(state.activeCollectionIdx);
     }
+    handled = true;
   }
 
   // Ctrl/Cmd+1-9: switch tabs within active collection
   if (ctrl && e.key >= '1' && e.key <= '9') {
-    e.preventDefault();
     const ci = state.activeCollectionIdx;
     if (ci >= 0 && state.collections[ci]) {
       const ti = parseInt(e.key) - 1;
@@ -730,45 +732,49 @@ document.addEventListener('keydown', (e) => {
         selectTab(ci, ti);
       }
     }
+    handled = true;
   }
 
   // Ctrl/Cmd+J: toggle journal viewer
   if (ctrl && e.key === 'j') {
-    e.preventDefault();
     if (journalOverlay.classList.contains('hidden')) {
       openJournalViewer();
     } else {
       closeJournalViewer();
     }
+    handled = true;
   }
 
   // Escape: close overlays
   if (e.key === 'Escape') {
     if (!journalOverlay.classList.contains('hidden')) {
       closeJournalViewer();
-      e.preventDefault();
-      return;
-    }
-    if (!settingsOverlay.classList.contains('hidden')) {
+      handled = true;
+    } else if (!settingsOverlay.classList.contains('hidden')) {
       settingsOverlay.classList.add('hidden');
-      e.preventDefault();
-      return;
+      handled = true;
     }
   }
 
   // Alt+1-9: switch globally across all collections
   if (e.altKey && e.key >= '1' && e.key <= '9') {
-    e.preventDefault();
     const idx = parseInt(e.key) - 1;
     let count = 0;
     for (let ci = 0; ci < state.collections.length; ci++) {
       for (let ti = 0; ti < state.collections[ci].tabs.length; ti++) {
-        if (count === idx) { selectTab(ci, ti); return; }
+        if (count === idx) { selectTab(ci, ti); handled = true; break; }
         count++;
       }
+      if (handled) break;
     }
+    handled = true;
   }
-});
+
+  if (handled) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
 
 // ── Activity polling ──
 setInterval(async () => {
@@ -1014,6 +1020,41 @@ document.getElementById('journal-cal-next').addEventListener('click', () => {
 
 // Journal header buttons
 
+// ── UI Scale slider ──
+const scaleSlider = document.getElementById('scale-slider');
+const scaleValue = document.getElementById('scale-value');
+
+function applyScale(pct) {
+  const factor = pct / 100;
+  claude.setZoomFactor(factor);
+  scaleValue.textContent = `${pct}%`;
+  scaleSlider.value = pct;
+  // Refit all visible terminals after zoom settles
+  requestAnimationFrame(() => {
+    for (const [tabId, inst] of terminalInstances) {
+      try {
+        inst.fitAddon.fit();
+        claude.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
+      } catch (_) {}
+    }
+  });
+}
+
+scaleSlider.addEventListener('input', () => {
+  const pct = parseInt(scaleSlider.value);
+  applyScale(pct);
+});
+
+scaleSlider.addEventListener('change', () => {
+  saveState();
+});
+
+// Double-click slider to reset to 100%
+scaleSlider.addEventListener('dblclick', () => {
+  applyScale(100);
+  saveState();
+});
+
 document.getElementById('nuke-btn').addEventListener('click', async () => {
   if (!confirm('Factory reset — clear all saved state and start fresh?')) return;
   if (!confirm('Last chance. Reset everything?')) return;
@@ -1043,6 +1084,13 @@ function escAttr(str) {
       `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | ${mod}+J journal | Alt+1-9 switch`;
 
     const loaded = await loadState();
+
+    // Apply saved UI scale
+    const savedState = await claude.loadState();
+    if (savedState && savedState.uiScale) {
+      applyScale(savedState.uiScale);
+    }
+
     if (!loaded) {
       const gTabId = genTabId();
       state.collections.push({
