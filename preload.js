@@ -25,9 +25,6 @@ contextBridge.exposeInMainWorld('claude', {
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
 
   // Journal
-  openJournalExternal: () => ipcRenderer.invoke('journal-open-external'),
-  openJournalDir: () => ipcRenderer.invoke('journal-open-dir'),
-  flushJournal: () => ipcRenderer.invoke('journal-flush'),
   listJournalDates: () => ipcRenderer.invoke('journal-list-dates'),
   readJournal: (dateStr) => ipcRenderer.invoke('journal-read', dateStr),
 });

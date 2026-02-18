@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -280,31 +280,6 @@ ipcMain.handle('load-state', () => {
 });
 
 // ── Journal ──
-
-ipcMain.handle('journal-open-external', () => {
-  const journalPath = journal.getJournalPath();
-  fs.mkdirSync(journal.JOURNAL_DIR, { recursive: true });
-  if (!fs.existsSync(journalPath)) {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-    });
-    fs.writeFileSync(journalPath, `# ${dateStr}\n\n`);
-  }
-  shell.openPath(journalPath);
-  return journalPath;
-});
-
-ipcMain.handle('journal-open-dir', () => {
-  fs.mkdirSync(journal.JOURNAL_DIR, { recursive: true });
-  shell.openPath(journal.JOURNAL_DIR);
-  return journal.JOURNAL_DIR;
-});
-
-ipcMain.handle('journal-flush', async () => {
-  await journal.summarize();
-  return true;
-});
 
 // List all journal dates that have .md files -> ['2026-02-17', '2026-02-16', ...]
 ipcMain.handle('journal-list-dates', () => {

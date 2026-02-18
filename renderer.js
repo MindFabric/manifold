@@ -992,49 +992,6 @@ document.getElementById('journal-cal-next').addEventListener('click', () => {
 });
 
 // Journal header buttons
-document.getElementById('journal-flush-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('journal-flush-btn');
-  btn.disabled = true;
-  btn.textContent = 'writing...';
-  try {
-    await claude.flushJournal();
-    btn.textContent = 'done!';
-    // Refresh view
-    const dates = await claude.listJournalDates();
-    journalDates = new Set(dates);
-    renderJournalCalendar();
-    renderJournalDayList();
-    const today = todayStr();
-    if (journalDates.has(today)) selectJournalDate(today);
-  } catch (_) {
-    btn.textContent = 'failed';
-  }
-  setTimeout(() => { btn.textContent = 'write now'; btn.disabled = false; }, 1500);
-});
-document.getElementById('journal-ext-btn').addEventListener('click', () => claude.openJournalExternal());
-document.getElementById('journal-dir-btn').addEventListener('click', () => claude.openJournalDir());
-
-// Settings journal buttons (point to viewer now)
-document.getElementById('settings-journal-open').addEventListener('click', () => {
-  settingsOverlay.classList.add('hidden');
-  openJournalViewer();
-});
-document.getElementById('settings-journal-dir').addEventListener('click', () => claude.openJournalDir());
-document.getElementById('settings-journal-flush').addEventListener('click', async () => {
-  const btn = document.getElementById('settings-journal-flush');
-  const label = btn.querySelector('.settings-label');
-  const origText = label.textContent;
-  label.textContent = 'Writing...';
-  btn.disabled = true;
-  try {
-    await claude.flushJournal();
-    label.textContent = 'Done!';
-    setTimeout(() => { label.textContent = origText; btn.disabled = false; }, 2000);
-  } catch (err) {
-    label.textContent = 'Failed';
-    setTimeout(() => { label.textContent = origText; btn.disabled = false; }, 2000);
-  }
-});
 
 document.getElementById('nuke-btn').addEventListener('click', async () => {
   if (!confirm('Factory reset — clear all saved state and start fresh?')) return;

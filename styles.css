@@ -494,25 +494,6 @@ body {
   font-size: 12px;
   letter-spacing: 2px;
 }
-#journal-header-btns {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-.journal-action-btn {
-  color: #555;
-  background: #222;
-  border: 1px solid #333;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 10px;
-  font-family: inherit;
-  padding: 3px 8px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-.journal-action-btn:hover { color: #D97757; border-color: #D97757; }
-.journal-action-btn:disabled { opacity: 0.4; cursor: default; }
 #journal-close-btn {
   color: #555;
   background: transparent;
