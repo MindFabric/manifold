@@ -53,7 +53,7 @@ function fitTerminal(tabId) {
 }
 
 // ── Terminal creation ──
-function createTerminalInstance(tabId, cwd, conversationId, name, collectionName) {
+function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt) {
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 50000,
@@ -92,8 +92,8 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
 
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
-  // Spawn backend pty — pass conversationId for --resume if available
-  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '' });
+  // Spawn backend pty — pass conversationId for --resume if available, or prompt for GSD mode
+  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null });
 
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
@@ -154,6 +154,7 @@ function renderCollections() {
         </div>
         <input class="collection-rename" type="text" value="${escAttr(col.name)}">
         <div class="collection-btns">
+          <button class="gsd-btn" data-ci="${ci}" title="Plan — orchestrated execution">Plan</button>
           <button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
           <button class="collection-btn-del del-btn" data-ci="${ci}" title="Delete collection">${'\u2715'}</button>
           <button class="collection-btn add-btn" data-ci="${ci}" title="New session">+</button>
@@ -369,6 +370,14 @@ function bindCollectionEvents() {
     el.addEventListener('click', () => {
       const ci = parseInt(el.dataset.ci);
       toggleGrid(ci);
+    });
+  });
+
+  // Plan button — launch GSD session directly (no modal)
+  document.querySelectorAll('.gsd-btn').forEach((el) => {
+    el.addEventListener('click', () => {
+      const ci = parseInt(el.dataset.ci);
+      launchGsdSession(ci);
     });
   });
 }
@@ -732,6 +741,14 @@ document.addEventListener('keydown', (e) => {
     handled = true;
   }
 
+  // Ctrl/Cmd+Shift+G: launch GSD plan session for active collection
+  if (ctrl && e.shiftKey && e.key === 'G') {
+    if (state.activeCollectionIdx >= 0) {
+      launchGsdSession(state.activeCollectionIdx);
+    }
+    handled = true;
+  }
+
   // Ctrl/Cmd+J: toggle journal viewer
   if (ctrl && e.key === 'j') {
     if (journalOverlay.classList.contains('hidden')) {
@@ -771,6 +788,28 @@ document.addEventListener('keydown', (e) => {
   }
 }, true);
 
+// ── Plan (GSD integration) ──
+
+function launchGsdSession(ci) {
+  const col = state.collections[ci];
+  if (!col) return;
+
+  const wasGridded = state.gridCollection === ci;
+  if (wasGridded) hideGridView();
+
+  // Spawn a new Claude session that runs /gsd:new-project directly
+  const tabId = genTabId();
+  col.tabs.push({ id: tabId, name: 'Plan', cwd: col.path });
+  createTerminalInstance(tabId, col.path, null, 'Plan', col.name, '/gsd:new-project');
+
+  col.expanded = true;
+  selectTab(ci, col.tabs.length - 1);
+  renderCollections();
+
+  if (wasGridded) showGridView(ci);
+  saveState();
+}
+
 // ── Activity polling ──
 setInterval(async () => {
   const tabIds = [...terminalInstances.keys()];
@@ -789,6 +828,18 @@ setInterval(async () => {
 // ── Auto-save ──
 setInterval(saveState, 30000);
 manifold.onSaveState(() => saveState());
+
+// ── Window focus handler — scroll active terminal to bottom ──
+window.addEventListener('focus', () => {
+  const tab = getActiveTab();
+  if (tab) {
+    const inst = terminalInstances.get(tab.id);
+    if (inst) {
+      inst.terminal.scrollToBottom();
+      inst.terminal.focus();
+    }
+  }
+});
 
 // ── Resize handler ──
 let resizeTimer = null;
@@ -1255,7 +1306,7 @@ async function restoreFromState(data) {
     const mod = isMac ? 'Cmd' : 'Ctrl';
     const toggle = isMac ? 'Cmd+Shift+C' : 'Super+C';
     document.getElementById('header-hints').textContent =
-      `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | ${mod}+J journal | Alt+1-9 switch`;
+      `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | ${mod}+J journal | ${mod}+Shift+G plan | Alt+1-9 switch`;
 
     const savedState = await manifold.loadState();
 

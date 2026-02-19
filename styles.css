@@ -984,6 +984,24 @@ body {
   font-size: 10px;
 }
 
+/* ── Plan button in collection header ── */
+.gsd-btn {
+  color: #666;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: bold;
+  padding: 0 4px;
+  min-width: 20px;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 1px;
+}
+.gsd-btn:hover { color: #D97757; }
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar {
   width: 6px;

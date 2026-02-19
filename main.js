@@ -207,7 +207,7 @@ async function autoNameSession(id) {
 
 // ── Terminal management ──
 
-ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName }) => {
+ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt }) => {
   const home = os.homedir();
   const dir = cwd || home;
   const tool = getToolConfig();
@@ -216,8 +216,9 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   delete cleanEnv.CLAUDECODE;
   delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
 
-  // Build tool command with resume support
+  // Build tool command with resume support or prompt mode
   let toolArgs;
+  let initialPrompt = prompt || null; // sent as first input after spawn
   if (conversationId && tool.buildResumeCmd) {
     // Codex-style: entirely different command for resume
     toolArgs = tool.buildResumeCmd(conversationId);
@@ -341,6 +342,23 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
       return dataBytes > 500 && (Date.now() - windowStart) < 3000;
     },
   });
+
+  // If there's an initial prompt, wait for Claude to start then type it in
+  if (initialPrompt) {
+    let prompted = false;
+    const onData = (data) => {
+      // Wait for Claude's input prompt ("> " or the cursor waiting for input)
+      if (!prompted && dataBytes > 100) {
+        prompted = true;
+        ptyProcess.removeListener('data', onData);
+        setTimeout(() => {
+          ptyProcess.write(initialPrompt + '\r');
+        }, 500);
+      }
+    };
+    ptyProcess.on('data', onData);
+  }
+
   return { id };
 });
 
@@ -535,6 +553,8 @@ ${rawContent}`;
     return { success: true, markdown: fallback, startDate: oldest, endDate: newest };
   }
 });
+
+// (GSD orchestration removed — now uses native /gsd:* slash commands in-terminal)
 
 // ── Folder picker ──
 
