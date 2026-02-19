@@ -55,10 +55,7 @@
     },
     "mac": {
       "target": [
-        {
-          "target": "dmg",
-          "arch": ["universal"]
-        }
+        "dmg"
       ],
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",

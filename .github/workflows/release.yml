@@ -26,9 +26,6 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Install setuptools (macOS needs distutils for node-gyp)
-        if: matrix.os == 'macos-latest'
-        run: pip install setuptools
       - run: npm ci
       - run: npx electron-builder ${{ matrix.cmd }} --publish never
       - uses: actions/upload-artifact@v4
