@@ -49,7 +49,18 @@ function fitTerminal(tabId) {
   if (!inst) return;
   inst.fitAddon.fit();
   manifold.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
+  scrollTerminalToBottom(inst);
+}
+
+function scrollTerminalToBottom(inst) {
   inst.terminal.scrollToBottom();
+  // xterm renders async after fit() — scroll again after render settles
+  setTimeout(() => {
+    inst.terminal.scrollToBottom();
+    // Direct DOM fallback in case xterm API doesn't stick
+    const vp = inst.element.querySelector('.xterm-viewport');
+    if (vp) vp.scrollTop = vp.scrollHeight;
+  }, 50);
 }
 
 // ── Terminal creation ──
@@ -177,7 +188,7 @@ function renderCollections() {
     collectionsList.appendChild(colEl);
 
     // Grid button active state
-    if (state.gridCollection === ci) {
+    if (col.gridded) {
       colEl.querySelector('.grid-btn').classList.add('active');
     }
   });
@@ -197,7 +208,7 @@ function bindCollectionEvents() {
       clickTimer = setTimeout(() => {
         clickTimer = null;
         const ci = parseInt(el.dataset.ci);
-        if (state.gridCollection === ci && state.activeCollectionIdx !== ci) {
+        if (state.collections[ci].gridded && state.activeCollectionIdx !== ci) {
           // Grid is on for this collection — switch to it
           const col = state.collections[ci];
           if (col.tabs.length > 0) {
@@ -394,13 +405,16 @@ function selectTab(ci, ti) {
   const row = document.querySelector(`.tab-row[data-ci="${ci}"][data-ti="${ti}"]`);
   if (row) row.classList.add('selected');
 
-  if (state.gridCollection === ci) {
+  const col = state.collections[ci];
+  if (col.gridded) {
     // This collection has grid on — show grid view
+    state.gridCollection = ci;
     showGridView(ci);
     highlightGridCell(tab.id);
   } else {
     // Different collection or no grid — show single terminal
-    hideGridView();
+    if (state.gridCollection !== null) hideGridView();
+    state.gridCollection = null;
     showSingleTerminal(tab.id);
   }
 }
@@ -443,7 +457,7 @@ function addSession(ci, cwd = null) {
   const col = state.collections[ci];
   if (!col) return;
 
-  const wasGridded = state.gridCollection === ci;
+  const wasGridded = col.gridded;
   if (wasGridded) hideGridView();
 
   const tabId = genTabId();
@@ -469,7 +483,7 @@ function closeSession(ci, ti) {
   const tab = col.tabs[ti];
   if (!tab) return;
 
-  const wasGridded = state.gridCollection === ci;
+  const wasGridded = col.gridded;
   if (wasGridded) hideGridView();
 
   destroyTerminalInstance(tab.id);
@@ -477,7 +491,8 @@ function closeSession(ci, ti) {
   col.tabs.splice(ti, 1);
 
   // If this collection is now empty, clear its grid flag
-  if (col.tabs.length === 0 && state.gridCollection === ci) {
+  if (col.tabs.length === 0 && col.gridded) {
+    col.gridded = false;
     state.gridCollection = null;
   }
 
@@ -515,7 +530,7 @@ async function addCollection(askPath = false) {
   if (!name) name = `Collection ${state.collections.length + 1}`;
   if (!folderPath) folderPath = homeDir || '/';
 
-  const col = { name, path: folderPath, expanded: true, tabs: [] };
+  const col = { name, path: folderPath, expanded: true, gridded: false, tabs: [] };
   state.collections.push(col);
   const ci = state.collections.length - 1;
 
@@ -533,12 +548,12 @@ async function addCollection(askPath = false) {
 function deleteCollection(ci) {
   if (state.collections.length <= 1) return;
 
-  if (state.gridCollection === ci) {
+  const col = state.collections[ci];
+
+  if (col.gridded) {
     hideGridView();
     state.gridCollection = null;
   }
-
-  const col = state.collections[ci];
 
   col.tabs.forEach((tab) => {
     destroyTerminalInstance(tab.id);
@@ -558,9 +573,12 @@ function deleteCollection(ci) {
     }
   }
 
-  if (state.gridCollection !== null) {
-    if (state.gridCollection === ci) state.gridCollection = null;
-    else if (state.gridCollection > ci) state.gridCollection--;
+  // Update gridCollection index after splice
+  state.gridCollection = null;
+  for (let i = 0; i < state.collections.length; i++) {
+    if (state.collections[i].gridded) {
+      if (i === state.activeCollectionIdx) state.gridCollection = i;
+    }
   }
 
   renderCollections();
@@ -568,28 +586,32 @@ function deleteCollection(ci) {
 }
 
 // ── Grid view ──
-// gridCollection is a sticky flag — it persists when navigating to other collections.
-// showGridView/hideGridView handle the DOM; toggleGrid sets the flag.
+// Grid is per-collection: col.gridded is the persistent flag.
+// state.gridCollection tracks which collection's grid is currently displayed in the DOM.
 
 function toggleGrid(ci) {
-  if (state.gridCollection === ci) {
+  const col = state.collections[ci];
+  if (col.gridded) {
     // Turn grid off for this collection
+    col.gridded = false;
     state.gridCollection = null;
     hideGridView();
     const tab = getActiveTab();
     if (tab) showSingleTerminal(tab.id);
   } else {
-    // Turn grid on (clears any previous grid)
-    hideGridView();
+    // Turn grid on
+    if (state.gridCollection !== null) hideGridView();
+    col.gridded = true;
     state.gridCollection = ci;
     state.activeCollectionIdx = ci;
-    if (state.collections[ci].tabs.length > 0) {
-      state.activeTabIdx = Math.min(state.activeTabIdx, state.collections[ci].tabs.length - 1);
+    if (col.tabs.length > 0) {
+      state.activeTabIdx = Math.min(state.activeTabIdx, col.tabs.length - 1);
       if (state.activeTabIdx < 0) state.activeTabIdx = 0;
     }
     showGridView(ci);
   }
   renderCollections();
+  saveState();
 }
 
 function showGridView(ci) {
@@ -680,6 +702,7 @@ async function saveState() {
       name: col.name,
       path: col.path,
       expanded: col.expanded,
+      gridded: col.gridded || false,
       tabs: col.tabs.map((t) => ({
         name: t.name,
         cwd: t.cwd,
@@ -794,7 +817,7 @@ function launchGsdSession(ci) {
   const col = state.collections[ci];
   if (!col) return;
 
-  const wasGridded = state.gridCollection === ci;
+  const wasGridded = col.gridded;
   if (wasGridded) hideGridView();
 
   // Spawn a new Claude session that runs /gsd:new-project directly
@@ -830,12 +853,12 @@ setInterval(saveState, 30000);
 manifold.onSaveState(() => saveState());
 
 // ── Window focus handler — scroll active terminal to bottom ──
-window.addEventListener('focus', () => {
+manifold.onWindowFocus(() => {
   const tab = getActiveTab();
   if (tab) {
     const inst = terminalInstances.get(tab.id);
     if (inst) {
-      inst.terminal.scrollToBottom();
+      scrollTerminalToBottom(inst);
       inst.terminal.focus();
     }
   }
@@ -1238,6 +1261,7 @@ async function initWorkspace(savedData) {
       name: 'General',
       path: homeDir,
       expanded: true,
+      gridded: false,
       tabs: [{ id: gTabId, name: 'Session 1', cwd: homeDir }],
     });
     createTerminalInstance(gTabId, homeDir, null, 'Session 1', 'General');
@@ -1265,6 +1289,7 @@ async function restoreFromState(data) {
       name: colData.name || `Collection ${ci + 1}`,
       path: colData.path || homeDir || '/',
       expanded: colData.expanded !== false,
+      gridded: colData.gridded || false,
       tabs: [],
     };
 

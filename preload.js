@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('manifold', {
   saveState: (state) => ipcRenderer.invoke('save-state', state),
   loadState: () => ipcRenderer.invoke('load-state'),
   onSaveState: (callback) => ipcRenderer.on('save-state', callback),
+  onWindowFocus: (callback) => ipcRenderer.on('window-focus', callback),
 
   // Dialogs
   pickFolder: () => ipcRenderer.invoke('pick-folder'),

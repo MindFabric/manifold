@@ -117,6 +117,10 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   mainWindow.maximize();
 
+  mainWindow.on('focus', () => {
+    mainWindow.webContents.send('window-focus');
+  });
+
   mainWindow.on('close', (e) => {
     e.preventDefault();
     mainWindow.webContents.send('save-state');
