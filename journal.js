@@ -6,9 +6,11 @@ const { spawn } = require('child_process');
 const JOURNAL_DIR = path.join(os.homedir(), 'Documents', 'journal');
 const BUFFER_MAX_LINES = 400;
 const SUMMARIZE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const INACTIVITY_TIMEOUT = 10 * 60 * 1000; // 10 minutes — stop logging after this much idle time
 
 // Per-terminal ring buffers: id -> { name, collection, lines[] }
 const buffers = new Map();
+let lastActivityTime = Date.now();
 
 // Strip ANSI escape codes and control chars from terminal output
 function stripAnsi(str) {
@@ -28,6 +30,14 @@ function feed(terminalId, terminalName, collectionName, data) {
   const clean = stripAnsi(data);
   const newLines = clean.split('\n').filter(l => l.trim().length > 0);
   if (newLines.length === 0) return;
+
+  lastActivityTime = Date.now();
+
+  // Restart the summarization timer if it was paused due to inactivity
+  if (!intervalId && _started) {
+    console.log('Journal: activity resumed, restarting summarization timer');
+    intervalId = setInterval(tick, SUMMARIZE_INTERVAL);
+  }
 
   buf.lines.push(...newLines);
   if (buf.lines.length > BUFFER_MAX_LINES) {
@@ -194,16 +204,28 @@ ${context}`;
 }
 
 let intervalId = null;
+let _started = false; // tracks whether journaling is logically active (vs paused for inactivity)
+
+function tick() {
+  // If no terminal activity for INACTIVITY_TIMEOUT, pause the timer
+  if (Date.now() - lastActivityTime > INACTIVITY_TIMEOUT) {
+    console.log('Journal: no terminal activity for 10 min, pausing summarization');
+    if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    return;
+  }
+  summarize().catch(err => console.error('Journal error:', err.message));
+}
 
 function start(getToolConfig) {
   if (intervalId) return;
+  _started = true;
+  lastActivityTime = Date.now();
   if (getToolConfig) toolConfigGetter = getToolConfig;
-  intervalId = setInterval(() => {
-    summarize().catch(err => console.error('Journal error:', err.message));
-  }, SUMMARIZE_INTERVAL);
+  intervalId = setInterval(tick, SUMMARIZE_INTERVAL);
 }
 
 function stop() {
+  _started = false;
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
