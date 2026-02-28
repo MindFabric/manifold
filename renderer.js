@@ -1,17 +1,14 @@
 /* xterm and FitAddon loaded via script tags */
 const Terminal = globalThis.Terminal;
 const FitAddon = (globalThis.FitAddon || {}).FitAddon;
+const WebglAddon = (globalThis.WebglAddon || {}).WebglAddon;
+const CanvasAddon = (globalThis.CanvasAddon || {}).CanvasAddon;
 
 if (!Terminal) console.error('xterm Terminal not loaded!');
 if (!FitAddon) console.error('FitAddon not loaded!');
 
 // Home directory - resolved async at startup
 let homeDir = '/';
-
-// Selected CLI tool: 'claude' | 'gemini' | 'codex'
-let currentTool = null;
-
-const TOOL_NAMES = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI' };
 
 // ── State ──
 const state = {
@@ -57,7 +54,6 @@ function scrollTerminalToBottom(inst) {
   // xterm renders async after fit() — scroll again after render settles
   setTimeout(() => {
     inst.terminal.scrollToBottom();
-    // Direct DOM fallback in case xterm API doesn't stick
     const vp = inst.element.querySelector('.xterm-viewport');
     if (vp) vp.scrollTop = vp.scrollHeight;
   }, 50);
@@ -67,7 +63,7 @@ function scrollTerminalToBottom(inst) {
 function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt) {
   const term = new Terminal({
     cursorBlink: true,
-    scrollback: 50000,
+    scrollback: 5000,
     fontFamily: '"Share Tech Mono", monospace',
     fontSize: 14,
     theme: {
@@ -103,15 +99,80 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
 
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
-  // Spawn backend pty — pass conversationId for --resume if available, or prompt for GSD mode
+  // Spawn backend pty
   manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null });
 
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
 
+  // Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.shiftKey && e.key === 'C') {
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel);
+      return false;
+    }
+    if (ctrl && e.shiftKey && e.key === 'V') {
+      navigator.clipboard.readText().then(text => {
+        if (text) manifold.sendInput(tabId, text);
+      });
+      return false;
+    }
+    return true;
+  });
+
   // Open terminal (double RAF to let DOM fully settle before measuring)
   requestAnimationFrame(() => {
     term.open(el);
+
+    // GPU-accelerated rendering: WebGL → Canvas2D → DOM (slowest)
+    // On Linux, WebGL often runs in software (llvmpipe/SwiftShader) which is
+    // slower than DOM. Detect this and fall back to Canvas2D which is reliably
+    // hardware-accelerated on all platforms.
+    let rendererLoaded = false;
+    if (WebglAddon) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          // Try canvas fallback on context loss
+          if (CanvasAddon) {
+            try { term.loadAddon(new CanvasAddon()); } catch (_) {}
+          }
+        });
+        term.loadAddon(webgl);
+        // Check if WebGL is hardware-accelerated
+        const testCanvas = document.createElement('canvas');
+        const gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl');
+        if (gl) {
+          const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+          if (debugInfo) {
+            const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL).toLowerCase();
+            if (renderer.includes('swiftshader') || renderer.includes('llvmpipe') || renderer.includes('softpipe') || renderer.includes('software')) {
+              // Software WebGL — worse than DOM, bail out
+              webgl.dispose();
+            } else {
+              rendererLoaded = true;
+            }
+          } else {
+            rendererLoaded = true; // Can't detect, assume OK
+          }
+          gl.getExtension('WEBGL_lose_context')?.loseContext();
+        }
+      } catch (_) {
+        // WebGL failed entirely
+      }
+    }
+    if (!rendererLoaded && CanvasAddon) {
+      try {
+        term.loadAddon(new CanvasAddon());
+      } catch (_) {
+        // Canvas2D failed — stuck with DOM renderer
+      }
+    }
+
     requestAnimationFrame(() => fitTerminal(tabId));
   });
 
@@ -121,6 +182,8 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
 // ── Terminal cleanup ──
 function destroyTerminalInstance(tabId) {
   manifold.destroyTerminal(tabId);
+  pendingWrites.delete(tabId);
+  hiddenBuffers.delete(tabId);
   const inst = terminalInstances.get(tabId);
   if (inst) {
     if (inst.element.parentNode) inst.element.parentNode.removeChild(inst.element);
@@ -129,24 +192,80 @@ function destroyTerminalInstance(tabId) {
   }
 }
 
-// ── Receive data from pty ──
+// ── Receive data from pty — chunked write queue with flow control ──
+// Without this, dumping large output (cat hugefile, ls -laR /) into a single
+// terminal.write() blocks xterm's parser and renderer, causing input lag.
+// We chunk incoming data into 4KB pieces and use xterm's write(data, callback)
+// to only feed the next chunk when xterm is ready. Hidden terminals buffer
+// data and flush when they become visible.
+
+const WRITE_CHUNK_SIZE = 4096;
+const pendingWrites = new Map(); // tabId -> { queue: string[], draining: bool }
+
+function getWriteState(id) {
+  let ws = pendingWrites.get(id);
+  if (!ws) {
+    ws = { queue: [], draining: false };
+    pendingWrites.set(id, ws);
+  }
+  return ws;
+}
+
+function drainWriteQueue(id) {
+  const inst = terminalInstances.get(id);
+  const ws = pendingWrites.get(id);
+  if (!inst || !ws || ws.queue.length === 0) {
+    if (ws) ws.draining = false;
+    return;
+  }
+  ws.draining = true;
+  const chunk = ws.queue.shift();
+  inst.terminal.write(chunk, () => {
+    // xterm finished processing this chunk — feed next
+    if (ws.queue.length > 0) {
+      drainWriteQueue(id);
+    } else {
+      ws.draining = false;
+    }
+  });
+}
+
+function enqueueWrite(id, data) {
+  const ws = getWriteState(id);
+  // Split into chunks so xterm can breathe between renders
+  for (let i = 0; i < data.length; i += WRITE_CHUNK_SIZE) {
+    ws.queue.push(data.slice(i, i + WRITE_CHUNK_SIZE));
+  }
+  if (!ws.draining) {
+    drainWriteQueue(id);
+  }
+}
+
+function isTerminalVisible(tabId) {
+  const tab = getActiveTab();
+  if (tab && tab.id === tabId) return true;
+  // Also visible if in grid view
+  const gc = state.gridCollection;
+  if (gc !== null && state.collections[gc]) {
+    return state.collections[gc].tabs.some(t => t.id === tabId);
+  }
+  return false;
+}
+
+// Buffer for hidden terminals — flushed when they become visible
+const hiddenBuffers = new Map(); // tabId -> string[]
+
 manifold.onTerminalData((id, data) => {
   const inst = terminalInstances.get(id);
-  if (inst) inst.terminal.write(data);
-});
+  if (!inst) return;
 
-// ── Auto-naming ──
-manifold.onTerminalAutoName((id, name) => {
-  // Find the tab with this ID and update its name (only if still default)
-  for (const col of state.collections) {
-    for (const tab of col.tabs) {
-      if (tab.id === id && /^Session \d+$/i.test(tab.name)) {
-        tab.name = name;
-        renderCollections();
-        saveState();
-        return;
-      }
-    }
+  if (isTerminalVisible(id)) {
+    enqueueWrite(id, data);
+  } else {
+    // Buffer data for hidden terminals
+    let buf = hiddenBuffers.get(id);
+    if (!buf) { buf = []; hiddenBuffers.set(id, buf); }
+    buf.push(data);
   }
 });
 
@@ -165,8 +284,7 @@ function renderCollections() {
         </div>
         <input class="collection-rename" type="text" value="${escAttr(col.name)}">
         <div class="collection-btns">
-          <button class="gsd-btn" data-ci="${ci}" title="Plan — orchestrated execution">Plan</button>
-          <button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
+<button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
           <button class="collection-btn-del del-btn" data-ci="${ci}" title="Delete collection">${'\u2715'}</button>
           <button class="collection-btn add-btn" data-ci="${ci}" title="New session">+</button>
         </div>
@@ -193,7 +311,6 @@ function renderCollections() {
     }
   });
 
-  // Bind events
   bindCollectionEvents();
 }
 
@@ -209,7 +326,6 @@ function bindCollectionEvents() {
         clickTimer = null;
         const ci = parseInt(el.dataset.ci);
         if (state.collections[ci].gridded && state.activeCollectionIdx !== ci) {
-          // Grid is on for this collection — switch to it
           const col = state.collections[ci];
           if (col.tabs.length > 0) {
             selectTab(ci, 0);
@@ -325,17 +441,14 @@ function bindCollectionEvents() {
       const dstCi = parseInt(el.dataset.ci);
       const dstTi = parseInt(el.dataset.ti);
 
-      // Only reorder within same collection
       if (srcCi !== dstCi) return;
       if (srcTi === dstTi) return;
 
       const col = state.collections[srcCi];
       const [moved] = col.tabs.splice(srcTi, 1);
-      // After splice, indices above srcTi shift down by 1
       const insertAt = srcTi < dstTi ? dstTi - 1 : dstTi;
       col.tabs.splice(insertAt, 0, moved);
 
-      // Update active tab index if needed
       if (state.activeCollectionIdx === srcCi) {
         if (state.activeTabIdx === srcTi) {
           state.activeTabIdx = insertAt;
@@ -384,13 +497,6 @@ function bindCollectionEvents() {
     });
   });
 
-  // Plan button — launch GSD session directly (no modal)
-  document.querySelectorAll('.gsd-btn').forEach((el) => {
-    el.addEventListener('click', () => {
-      const ci = parseInt(el.dataset.ci);
-      launchGsdSession(ci);
-    });
-  });
 }
 
 // ── Tab selection ──
@@ -407,20 +513,26 @@ function selectTab(ci, ti) {
 
   const col = state.collections[ci];
   if (col.gridded) {
-    // This collection has grid on — show grid view
     state.gridCollection = ci;
     showGridView(ci);
     highlightGridCell(tab.id);
   } else {
-    // Different collection or no grid — show single terminal
     if (state.gridCollection !== null) hideGridView();
     state.gridCollection = null;
     showSingleTerminal(tab.id);
   }
 }
 
+function flushHiddenBuffer(tabId) {
+  const buf = hiddenBuffers.get(tabId);
+  if (buf && buf.length > 0) {
+    const data = buf.join('');
+    hiddenBuffers.delete(tabId);
+    enqueueWrite(tabId, data);
+  }
+}
+
 function showSingleTerminal(tabId) {
-  // Hide all terminals instead of removing them (preserves scroll position)
   for (const child of terminalSingle.children) {
     child.style.display = 'none';
   }
@@ -430,7 +542,7 @@ function showSingleTerminal(tabId) {
       terminalSingle.appendChild(inst.element);
     }
     inst.element.style.display = '';
-    // Double RAF: first lets browser recalc layout, second measures correctly
+    flushHiddenBuffer(tabId);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         fitTerminal(tabId);
@@ -490,7 +602,6 @@ function closeSession(ci, ti) {
 
   col.tabs.splice(ti, 1);
 
-  // If this collection is now empty, clear its grid flag
   if (col.tabs.length === 0 && col.gridded) {
     col.gridded = false;
     state.gridCollection = null;
@@ -573,7 +684,6 @@ function deleteCollection(ci) {
     }
   }
 
-  // Update gridCollection index after splice
   state.gridCollection = null;
   for (let i = 0; i < state.collections.length; i++) {
     if (state.collections[i].gridded) {
@@ -586,20 +696,16 @@ function deleteCollection(ci) {
 }
 
 // ── Grid view ──
-// Grid is per-collection: col.gridded is the persistent flag.
-// state.gridCollection tracks which collection's grid is currently displayed in the DOM.
 
 function toggleGrid(ci) {
   const col = state.collections[ci];
   if (col.gridded) {
-    // Turn grid off for this collection
     col.gridded = false;
     state.gridCollection = null;
     hideGridView();
     const tab = getActiveTab();
     if (tab) showSingleTerminal(tab.id);
   } else {
-    // Turn grid on
     if (state.gridCollection !== null) hideGridView();
     col.gridded = true;
     state.gridCollection = ci;
@@ -618,7 +724,6 @@ function showGridView(ci) {
   const col = state.collections[ci];
   if (!col || !col.tabs.length) return;
 
-  // Detach any terminals currently in the grid
   for (const [, inst] of terminalInstances) {
     if (inst.element.parentNode && inst.element.closest('#terminal-grid')) {
       inst.element.parentNode.removeChild(inst.element);
@@ -663,6 +768,7 @@ function showGridView(ci) {
       if (inst.element.parentNode) inst.element.parentNode.removeChild(inst.element);
       inst.element.style.display = '';
       cell.appendChild(inst.element);
+      flushHiddenBuffer(tab.id);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => fitTerminal(tab.id));
       });
@@ -673,7 +779,6 @@ function showGridView(ci) {
 }
 
 function hideGridView() {
-  // Detach all terminal elements from grid cells before clearing
   for (const [, inst] of terminalInstances) {
     if (inst.element.parentNode && inst.element.closest('#terminal-grid')) {
       inst.element.parentNode.removeChild(inst.element);
@@ -685,9 +790,7 @@ function hideGridView() {
 }
 
 // ── State persistence ──
-// Before saving, fetch conversation IDs from main process for each tab
 async function saveState() {
-  // Update conversation IDs from main process (parallel for speed)
   const allTabs = state.collections.flatMap(col => col.tabs);
   const convoResults = await Promise.all(
     allTabs.map(tab => manifold.getConversationId(tab.id).catch(() => null))
@@ -697,7 +800,6 @@ async function saveState() {
   });
 
   const data = {
-    selectedTool: currentTool,
     collections: state.collections.map((col) => ({
       name: col.name,
       path: col.path,
@@ -717,7 +819,6 @@ async function saveState() {
 }
 
 // ── Keybindings ──
-// Use capture phase so shortcuts fire before xterm swallows keys like Ctrl+3 (ESC)
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   let handled = false;
@@ -764,36 +865,43 @@ document.addEventListener('keydown', (e) => {
     handled = true;
   }
 
-  // Ctrl/Cmd+Shift+G: launch GSD plan session for active collection
-  if (ctrl && e.shiftKey && e.key === 'G') {
-    if (state.activeCollectionIdx >= 0) {
-      launchGsdSession(state.activeCollectionIdx);
-    }
-    handled = true;
-  }
-
-  // Ctrl/Cmd+J: toggle journal viewer
-  if (ctrl && e.key === 'j') {
-    if (journalOverlay.classList.contains('hidden')) {
-      openJournalViewer();
-    } else {
-      closeJournalViewer();
-    }
-    handled = true;
-  }
-
-  // Escape: close overlays
+  // Escape: close settings overlay
   if (e.key === 'Escape') {
-    if (!journalOverlay.classList.contains('hidden')) {
-      closeJournalViewer();
-      handled = true;
-    } else if (!settingsOverlay.classList.contains('hidden')) {
+    if (!settingsOverlay.classList.contains('hidden')) {
       settingsOverlay.classList.add('hidden');
       handled = true;
     }
   }
 
-  // Alt+1-9: switch tabs within active collection (same as Ctrl+1-9)
+  // Alt+Up/Down: jump between collections
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const cols = state.collections;
+    if (cols.length > 1) {
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      const ci = (state.activeCollectionIdx + dir + cols.length) % cols.length;
+      const col = cols[ci];
+      if (col.tabs.length > 0) {
+        selectTab(ci, 0);
+        renderCollections();
+      }
+    }
+    handled = true;
+  }
+
+  // Alt+Left/Right: cycle sessions within active collection
+  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    const ci = state.activeCollectionIdx;
+    const col = state.collections[ci];
+    if (col && col.tabs.length > 1) {
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      const ti = (state.activeTabIdx + dir + col.tabs.length) % col.tabs.length;
+      selectTab(ci, ti);
+      renderCollections();
+    }
+    handled = true;
+  }
+
+  // Alt+1-9: switch tabs within active collection
   if (e.altKey && e.key >= '1' && e.key <= '9') {
     const ci = state.activeCollectionIdx;
     if (ci >= 0 && state.collections[ci]) {
@@ -810,28 +918,6 @@ document.addEventListener('keydown', (e) => {
     e.stopPropagation();
   }
 }, true);
-
-// ── Plan (GSD integration) ──
-
-function launchGsdSession(ci) {
-  const col = state.collections[ci];
-  if (!col) return;
-
-  const wasGridded = col.gridded;
-  if (wasGridded) hideGridView();
-
-  // Spawn a new Claude session that runs /gsd:new-project directly
-  const tabId = genTabId();
-  col.tabs.push({ id: tabId, name: 'Plan', cwd: col.path });
-  createTerminalInstance(tabId, col.path, null, 'Plan', col.name, '/gsd:new-project');
-
-  col.expanded = true;
-  selectTab(ci, col.tabs.length - 1);
-  renderCollections();
-
-  if (wasGridded) showGridView(ci);
-  saveState();
-}
 
 // ── Activity polling ──
 setInterval(async () => {
@@ -852,7 +938,7 @@ setInterval(async () => {
 setInterval(saveState, 30000);
 manifold.onSaveState(() => saveState());
 
-// ── Window focus handler — scroll active terminal to bottom ──
+// ── Window focus handler ──
 manifold.onWindowFocus(() => {
   const tab = getActiveTab();
   if (tab) {
@@ -892,14 +978,9 @@ document.getElementById('btn-new-collection').addEventListener('click', () => {
 const settingsOverlay = document.getElementById('settings-overlay');
 
 document.getElementById('settings-btn').addEventListener('click', () => {
-  document.getElementById('settings-tool-name').textContent = TOOL_NAMES[currentTool] || 'Not selected';
   settingsOverlay.classList.toggle('hidden');
 });
 
-document.getElementById('tool-change-btn').addEventListener('click', async () => {
-  settingsOverlay.classList.add('hidden');
-  await showToolSelector();
-});
 document.getElementById('settings-close-btn').addEventListener('click', () => {
   settingsOverlay.classList.add('hidden');
 });
@@ -907,222 +988,29 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
 });
 
-// ── Journal viewer ──
-const journalOverlay = document.getElementById('journal-overlay');
-const journalCalDays = document.getElementById('journal-cal-days');
-const journalCalMonthLabel = document.getElementById('journal-cal-month-label');
-const journalDayList = document.getElementById('journal-day-list');
-const journalContentDate = document.getElementById('journal-content-date');
-const journalContentBody = document.getElementById('journal-content-body');
-
-let journalDates = new Set(); // dates with entries: '2026-02-17'
-let journalViewMonth = new Date(); // currently viewed month
-let journalSelectedDate = null; // currently selected date string
-
-function padZ(n) { return n < 10 ? '0' + n : '' + n; }
-
-function toDateStr(d) {
-  return `${d.getFullYear()}-${padZ(d.getMonth() + 1)}-${padZ(d.getDate())}`;
+// ── Shortcuts table (populated after platform detection) ──
+function populateShortcuts(isMac) {
+  const mod = isMac ? '\u2318' : 'Ctrl';
+  const toggle = isMac ? '\u2318+Shift+C' : 'Super+C';
+  const shortcuts = [
+    [toggle, 'Toggle window'],
+    [`${mod}+T`, 'New session'],
+    [`${mod}+Y`, 'New collection'],
+    [`${mod}+W`, 'Close session'],
+    [`${mod}+G`, 'Toggle grid view'],
+    [`${mod}+1-9`, 'Switch to tab N'],
+    ['Alt+1-9', 'Switch to tab N'],
+    ['Alt+\u2191/\u2193', 'Jump between collections'],
+    ['Alt+\u2190/\u2192', 'Cycle sessions'],
+    ['Ctrl+Shift+C', 'Copy from terminal'],
+    ['Ctrl+Shift+V', 'Paste into terminal'],
+    ['Esc', 'Close settings'],
+  ];
+  const table = document.getElementById('shortcuts-table');
+  table.innerHTML = shortcuts.map(([key, desc]) =>
+    `<div class="shortcut-row"><span class="shortcut-key">${key}</span><span class="shortcut-desc">${desc}</span></div>`
+  ).join('');
 }
-
-function todayStr() { return toDateStr(new Date()); }
-
-async function openJournalViewer() {
-  journalOverlay.classList.remove('hidden');
-  // Load available dates
-  const dates = await manifold.listJournalDates();
-  journalDates = new Set(dates);
-  journalViewMonth = new Date();
-  journalSelectedDate = null;
-  renderJournalCalendar();
-  renderJournalDayList();
-  // Auto-select today if it has an entry
-  const today = todayStr();
-  if (journalDates.has(today)) {
-    selectJournalDate(today);
-  } else if (dates.length > 0) {
-    selectJournalDate(dates[0]); // most recent
-  } else {
-    journalContentDate.textContent = '';
-    journalContentBody.innerHTML = '<p class="journal-empty">No journal entries yet. Activity is recorded automatically as you work.</p>';
-  }
-}
-
-function closeJournalViewer() {
-  journalOverlay.classList.add('hidden');
-}
-
-function renderJournalCalendar() {
-  const year = journalViewMonth.getFullYear();
-  const month = journalViewMonth.getMonth();
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'];
-  journalCalMonthLabel.textContent = `${monthNames[month]} ${year}`;
-
-  journalCalDays.innerHTML = '';
-
-  const firstDay = new Date(year, month, 1).getDay(); // 0=Sun
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const today = todayStr();
-
-  // Empty cells before first day
-  for (let i = 0; i < firstDay; i++) {
-    const cell = document.createElement('div');
-    cell.className = 'jcal-day empty';
-    journalCalDays.appendChild(cell);
-  }
-
-  // Day cells
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${year}-${padZ(month + 1)}-${padZ(d)}`;
-    const cell = document.createElement('div');
-    cell.className = 'jcal-day';
-    cell.textContent = d;
-
-    const isFuture = dateStr > today;
-    if (journalDates.has(dateStr)) cell.classList.add('has-entry');
-    if (dateStr === today) cell.classList.add('today');
-    if (isFuture) cell.classList.add('future');
-    if (dateStr === journalSelectedDate) cell.classList.add('selected');
-
-    if (!isFuture) {
-      cell.addEventListener('click', () => selectJournalDate(dateStr));
-    }
-
-    journalCalDays.appendChild(cell);
-  }
-}
-
-function renderJournalDayList() {
-  journalDayList.innerHTML = '';
-  const sortedDates = [...journalDates].sort().reverse();
-
-  for (const dateStr of sortedDates) {
-    const d = new Date(dateStr + 'T12:00:00');
-    const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-
-    const item = document.createElement('div');
-    item.className = 'jday-item';
-    if (dateStr === journalSelectedDate) item.classList.add('selected');
-    item.innerHTML = `<span class="jday-dot"></span><span>${label}</span>`;
-    item.addEventListener('click', () => selectJournalDate(dateStr));
-    journalDayList.appendChild(item);
-  }
-}
-
-async function selectJournalDate(dateStr) {
-  journalSelectedDate = dateStr;
-
-  // Update calendar selection
-  journalCalDays.querySelectorAll('.jcal-day').forEach(c => c.classList.remove('selected'));
-  journalCalDays.querySelectorAll('.jcal-day').forEach(c => {
-    // Find matching cell by checking date
-    const d = new Date(dateStr + 'T12:00:00');
-    const viewYear = journalViewMonth.getFullYear();
-    const viewMonth = journalViewMonth.getMonth();
-    if (d.getFullYear() === viewYear && d.getMonth() === viewMonth && parseInt(c.textContent) === d.getDate()) {
-      c.classList.add('selected');
-    }
-  });
-
-  // Update day list selection
-  journalDayList.querySelectorAll('.jday-item').forEach(el => el.classList.remove('selected'));
-  journalDayList.querySelectorAll('.jday-item').forEach((el, i) => {
-    const sortedDates = [...journalDates].sort().reverse();
-    if (sortedDates[i] === dateStr) el.classList.add('selected');
-  });
-
-  // Load and render content
-  const d = new Date(dateStr + 'T12:00:00');
-  journalContentDate.textContent = d.toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  });
-
-  const content = await manifold.readJournal(dateStr);
-  if (content) {
-    journalContentBody.innerHTML = renderMarkdown(content);
-  } else {
-    journalContentBody.innerHTML = '<p class="journal-empty">No entry for this date.</p>';
-  }
-}
-
-// Simple markdown renderer for journal entries
-function inlineMarkdown(escaped) {
-  return escaped
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`(.+?)`/g, '<code>$1</code>');
-}
-
-function renderMarkdown(md) {
-  return md
-    .split('\n')
-    .map(line => {
-      if (/^### (.+)/.test(line)) return `<h3>${inlineMarkdown(escHtml(line.replace(/^### /, '')))}</h3>`;
-      if (/^## (.+)/.test(line)) return `<h2>${inlineMarkdown(escHtml(line.replace(/^## /, '')))}</h2>`;
-      if (/^# (.+)/.test(line)) return `<h1>${inlineMarkdown(escHtml(line.replace(/^# /, '')))}</h1>`;
-      if (/^---\s*$/.test(line)) return '<hr>';
-      if (/^- (.+)/.test(line)) return `<li>${inlineMarkdown(escHtml(line.replace(/^- /, '')))}</li>`;
-      if (line.trim() === '') return '';
-      return `<p>${inlineMarkdown(escHtml(line))}</p>`;
-    })
-    .join('\n')
-    // Wrap consecutive <li> in <ul>
-    .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-}
-
-// Journal button opens viewer
-document.getElementById('journal-btn').addEventListener('click', () => openJournalViewer());
-
-// Close journal viewer
-document.getElementById('journal-close-btn').addEventListener('click', closeJournalViewer);
-journalOverlay.addEventListener('click', (e) => {
-  if (e.target === journalOverlay) closeJournalViewer();
-});
-
-// Calendar navigation
-document.getElementById('journal-cal-prev').addEventListener('click', () => {
-  journalViewMonth.setMonth(journalViewMonth.getMonth() - 1);
-  renderJournalCalendar();
-});
-document.getElementById('journal-cal-next').addEventListener('click', () => {
-  journalViewMonth.setMonth(journalViewMonth.getMonth() + 1);
-  renderJournalCalendar();
-});
-
-// Weekly export
-document.getElementById('journal-export-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('journal-export-btn');
-  const origText = btn.textContent;
-  btn.textContent = 'Exporting...';
-  btn.classList.add('exporting');
-
-  try {
-    const result = await manifold.weeklyExport();
-    if (!result.success) {
-      btn.textContent = result.error || 'No entries found';
-      setTimeout(() => { btn.textContent = origText; btn.classList.remove('exporting'); }, 2500);
-      return;
-    }
-
-    // Trigger download via blob
-    const blob = new Blob([result.markdown], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `weekly-report-${result.startDate}-to-${result.endDate}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    btn.textContent = 'Exported!';
-    setTimeout(() => { btn.textContent = origText; btn.classList.remove('exporting'); }, 2000);
-  } catch (err) {
-    console.error('Weekly export failed:', err);
-    btn.textContent = 'Export failed';
-    setTimeout(() => { btn.textContent = origText; btn.classList.remove('exporting'); }, 2500);
-  }
-});
 
 // ── UI Scale slider ──
 const scaleSlider = document.getElementById('scale-slider');
@@ -1133,7 +1021,6 @@ function applyScale(pct) {
   manifold.setZoomFactor(factor);
   scaleValue.textContent = `${pct}%`;
   scaleSlider.value = pct;
-  // Refit all visible terminals after zoom settles
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       for (const [tabId] of terminalInstances) {
@@ -1152,7 +1039,6 @@ scaleSlider.addEventListener('change', () => {
   saveState();
 });
 
-// Double-click slider to reset to 100%
 scaleSlider.addEventListener('dblclick', () => {
   applyScale(100);
   saveState();
@@ -1173,84 +1059,7 @@ function escAttr(str) {
   return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
-// ── Tool selector ──
-
-async function showToolSelector() {
-  return new Promise(async (resolve) => {
-    const overlay = document.getElementById('tool-selector-overlay');
-    const cardsContainer = document.getElementById('tool-cards');
-    const installStatus = document.getElementById('tool-install-status');
-    const installText = document.getElementById('tool-install-text');
-    const installError = document.getElementById('tool-install-error');
-
-    const [installed, configs] = await Promise.all([
-      manifold.detectTools(),
-      manifold.getToolConfigs(),
-    ]);
-
-    cardsContainer.innerHTML = '';
-    installStatus.classList.add('hidden');
-    installError.classList.add('hidden');
-
-    for (const [key, config] of Object.entries(configs)) {
-      const card = document.createElement('div');
-      card.className = 'tool-card';
-      card.dataset.tool = key;
-      card.innerHTML = `
-        <div class="tool-card-info">
-          <span class="tool-card-name">${escHtml(config.name)}</span>
-          <span class="tool-card-binary">${escHtml(config.binary)}</span>
-        </div>
-        <span class="tool-card-status ${installed[key] ? '' : 'not-installed'}">
-          ${installed[key] ? 'installed' : 'not installed'}
-        </span>
-      `;
-
-      card.addEventListener('click', async () => {
-        // Disable all cards during processing
-        cardsContainer.querySelectorAll('.tool-card').forEach(c => {
-          c.classList.remove('selected');
-          c.style.pointerEvents = 'none';
-        });
-        card.classList.add('selected');
-        installError.classList.add('hidden');
-
-        if (!installed[key]) {
-          installStatus.classList.remove('hidden');
-          installText.textContent = `Installing ${config.name}...`;
-          const result = await manifold.installTool(key);
-          if (result.success) {
-            installed[key] = true;
-            card.querySelector('.tool-card-status').textContent = 'installed';
-            card.querySelector('.tool-card-status').classList.remove('not-installed');
-            installStatus.classList.add('hidden');
-          } else {
-            installStatus.classList.add('hidden');
-            installError.textContent = `Install failed: ${result.error}`;
-            installError.classList.remove('hidden');
-            // Re-enable cards
-            cardsContainer.querySelectorAll('.tool-card').forEach(c => c.style.pointerEvents = '');
-            return;
-          }
-        }
-
-        // Tool is installed — select and close
-        currentTool = key;
-        await manifold.setSelectedTool(key);
-        overlay.classList.add('hidden');
-        // Re-enable cards for next time
-        cardsContainer.querySelectorAll('.tool-card').forEach(c => c.style.pointerEvents = '');
-        resolve();
-      });
-
-      cardsContainer.appendChild(card);
-    }
-
-    overlay.classList.remove('hidden');
-  });
-}
-
-// ── Workspace init (after tool is selected) ──
+// ── Workspace init ──
 
 async function initWorkspace(savedData) {
   const loaded = await restoreFromState(savedData);
@@ -1331,7 +1140,8 @@ async function restoreFromState(data) {
     const mod = isMac ? 'Cmd' : 'Ctrl';
     const toggle = isMac ? 'Cmd+Shift+C' : 'Super+C';
     document.getElementById('header-hints').textContent =
-      `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | ${mod}+J journal | ${mod}+Shift+G plan | Alt+1-9 switch`;
+      `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | Alt+\u2190\u2192 sessions | Alt+\u2191\u2193 collections`;
+    populateShortcuts(isMac);
 
     const savedState = await manifold.loadState();
 
@@ -1340,21 +1150,7 @@ async function restoreFromState(data) {
       applyScale(savedState.uiScale);
     }
 
-    if (savedState && savedState.selectedTool) {
-      // Returning user — restore tool and proceed
-      currentTool = savedState.selectedTool;
-      await manifold.setSelectedTool(currentTool);
-      await initWorkspace(savedState);
-    } else if (savedState && savedState.collections && savedState.collections.length > 0) {
-      // Existing user upgrading — default to Claude
-      currentTool = 'claude';
-      await manifold.setSelectedTool('claude');
-      await initWorkspace(savedState);
-    } else {
-      // First launch — show tool selector, then init workspace
-      await showToolSelector();
-      await initWorkspace(null);
-    }
+    await initWorkspace(savedState);
   } catch (err) {
     console.error('Init failed:', err);
   }

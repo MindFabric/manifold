@@ -6,8 +6,8 @@
   "scripts": {
     "preinstall": "node scripts/check-deps.js",
     "postinstall": "electron-rebuild",
-    "start": "electron . --no-sandbox",
-    "dev": "electron . --no-sandbox",
+    "start": "electron . --no-sandbox --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations,UseOzonePlatform --enable-gpu-rasterization --enable-zero-copy",
+    "dev": "electron . --no-sandbox --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations,UseOzonePlatform --enable-gpu-rasterization --enable-zero-copy",
     "build": "electron-builder",
     "build:linux": "electron-builder --linux",
     "build:mac": "electron-builder --mac",
@@ -25,7 +25,9 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
     "node-pty": "^1.0.0"
   },
@@ -39,7 +41,6 @@
     "productName": "Manifold",
     "files": [
       "main.js",
-      "journal.js",
       "preload.js",
       "renderer.js",
       "index.html",
