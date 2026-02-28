@@ -41,7 +41,6 @@ npm start
 
 | Shortcut | Action |
 |----------|--------|
-| `Super+C` / `Cmd+Shift+C` | Toggle app visibility |
 | `Ctrl+T` | New session in active collection |
 | `Ctrl+Y` | New collection (opens folder picker) |
 | `Ctrl+W` | Close active session |

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, screen, nativeImage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -369,18 +369,6 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  const toggleKey = IS_MAC ? 'Command+Shift+C' : 'Super+C';
-  globalShortcut.register(toggleKey, () => {
-    if (mainWindow.isVisible()) {
-      mainWindow.webContents.send('save-state');
-      mainWindow.hide();
-    } else {
-      mainWindow.show();
-      mainWindow.maximize();
-      mainWindow.focus();
-    }
-  });
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -392,11 +380,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  globalShortcut.unregisterAll();
   if (!IS_MAC) app.quit();
 });
 
 app.on('will-quit', () => {
   destroyAllTerminals();
-  globalShortcut.unregisterAll();
 });

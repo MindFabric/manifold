@@ -998,9 +998,7 @@ settingsOverlay.addEventListener('click', (e) => {
 // ── Shortcuts table (populated after platform detection) ──
 function populateShortcuts(isMac) {
   const mod = isMac ? '\u2318' : 'Ctrl';
-  const toggle = isMac ? '\u2318+Shift+C' : 'Super+C';
   const shortcuts = [
-    [toggle, 'Toggle window'],
     [`${mod}+T`, 'New session'],
     [`${mod}+Y`, 'New collection'],
     [`${mod}+W`, 'Close session'],
@@ -1145,9 +1143,8 @@ async function restoreFromState(data) {
     document.body.classList.add(`platform-${platform}`);
 
     const mod = isMac ? 'Cmd' : 'Ctrl';
-    const toggle = isMac ? 'Cmd+Shift+C' : 'Super+C';
     document.getElementById('header-hints').textContent =
-      `${toggle} toggle | ${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | Alt+\u2190\u2192 sessions | Alt+\u2191\u2193 collections`;
+      `${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | Alt+\u2190\u2192 sessions | Alt+\u2191\u2193 collections`;
     populateShortcuts(isMac);
 
     const savedState = await manifold.loadState();
