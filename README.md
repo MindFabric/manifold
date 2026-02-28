@@ -17,11 +17,10 @@
 ## Getting started
 
 ```bash
-git clone https://github.com/MindFabric/manifold.git
-cd manifold
-npm install
-npm start
+git clone https://github.com/MindFabric/manifold.git && cd manifold && npm install && npm start
 ```
+
+That's it. Clone, install, run — one line.
 
 ## Features
 
