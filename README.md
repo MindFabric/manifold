@@ -9,14 +9,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MindFabric/manifold-releases/releases/latest">Download for Linux, macOS, or Windows</a>
-</p>
-
-<p align="center">
   <img src="screenshots/Screenshot From 2026-02-28 11-12-05.png" alt="Manifold grid view" width="900">
 </p>
 
 ---
+
+## Getting started
+
+```bash
+git clone https://github.com/MindFabric/manifold.git
+cd manifold
+npm install
+npm start
+```
 
 ## Features
 
