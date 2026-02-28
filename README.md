@@ -5,7 +5,7 @@
 <h1 align="center">Manifold</h1>
 
 <p align="center">
-  A workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Run multiple sessions in parallel, organize them into collections, monitor everything in grid view, and let an automatic dev journal track what you built.
+  A workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Run multiple sessions in parallel, organize them into collections, and monitor everything in grid view.
 </p>
 
 <p align="center">
@@ -16,13 +16,11 @@
 
 ## Features
 
-**Terminal multiplexing** — Run many Claude Code sessions at once, organized into named collections (one per project, or however you like). Each session gets its own pseudo-terminal with 50k lines of scrollback.
+**Terminal multiplexing** — Run many Claude Code sessions at once, organized into named collections (one per project, or however you like). Each session gets its own pseudo-terminal with 5000 lines of scrollback.
 
 **Grid view** — Press `Ctrl+G` to see every session in the active collection rendered simultaneously. Great for watching a build, tests, and a dev server at the same time.
 
-**Auto-naming** — New tabs get a descriptive name automatically after ~30 seconds of activity. Claude reads the terminal buffer and picks a short label like "auth bug fix" or "api refactor".
-
-**Dev journal** — A background process captures terminal activity across all sessions and summarizes it every 5 minutes into a daily markdown file (`~/Documents/journal/`). Open the built-in journal viewer with `Ctrl+J` to browse past entries by date.
+**GPU-accelerated rendering** — Terminals use WebGL when available, with automatic fallback to Canvas2D. Software renderers (llvmpipe/SwiftShader) are detected and skipped.
 
 **Conversation tracking** — Manifold detects when Claude Code starts a new conversation and saves the ID. Close a tab, reopen it later, and you can resume exactly where you left off.
 
@@ -36,24 +34,22 @@
 |----------|--------|
 | `Super+C` / `Cmd+Shift+C` | Toggle app visibility |
 | `Ctrl+T` | New session in active collection |
-| `Ctrl+Y` / `Ctrl+P` | New collection (opens folder picker) |
+| `Ctrl+Y` | New collection (opens folder picker) |
 | `Ctrl+W` | Close active session |
 | `Ctrl+G` | Toggle grid view |
-| `Ctrl+J` | Toggle journal viewer |
-| `Alt+1-9` | Jump to session N (within collection) |
-| `Ctrl+1-9` | Jump to session N (within collection) |
+| `Alt+Up/Down` | Jump between collections |
+| `Alt+Left/Right` | Cycle sessions within collection |
+| `Alt+1-9` / `Ctrl+1-9` | Jump to session N |
+| `Ctrl+Shift+C` | Copy from terminal |
+| `Ctrl+Shift+V` | Paste into terminal |
 | `Escape` | Close overlays |
 
 On macOS, `Cmd` replaces `Ctrl` where applicable.
 
-## How the journal works
-
-Every terminal's output is captured in a ring buffer (last 400 lines). Every 5 minutes, the accumulated activity is grouped by project and sent to Claude for summarization. The result is appended to `~/Documents/journal/YYYY-MM/YYYY-MM-DD.md` as timestamped bullet points describing what you accomplished — not raw commands, but a readable log of your work.
-
 ## Tech stack
 
 - [Electron](https://www.electronjs.org/) — app shell
-- [xterm.js](https://xtermjs.org/) — terminal emulation
+- [xterm.js](https://xtermjs.org/) — terminal emulation (with WebGL/Canvas addons)
 - [node-pty](https://github.com/microsoft/node-pty) — pseudo-terminal spawning
 - [electron-builder](https://www.electron.build/) — packaging and distribution
 
