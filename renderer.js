@@ -274,7 +274,7 @@ function renderCollections() {
   collectionsList.innerHTML = '';
   state.collections.forEach((col, ci) => {
     const colEl = document.createElement('div');
-    colEl.className = 'collection';
+    colEl.className = `collection${ci === state.activeCollectionIdx ? ' collection-active' : ''}`;
     colEl.innerHTML = `
       <div class="collection-header" data-ci="${ci}">
         <span class="collection-arrow">${col.expanded ? '\u25BC' : '\u25B6'}</span>
@@ -504,14 +504,21 @@ function selectTab(ci, ti) {
   state.activeCollectionIdx = ci;
   state.activeTabIdx = ti;
 
-  const tab = state.collections[ci].tabs[ti];
+  const col = state.collections[ci];
+  if (!col) return;
+  const tab = col.tabs[ti];
   if (!tab) return;
+
+  // Auto-expand collapsed collections when navigating into them
+  if (!col.expanded) {
+    col.expanded = true;
+    renderCollections();
+  }
 
   document.querySelectorAll('.tab-row').forEach((el) => el.classList.remove('selected'));
   const row = document.querySelector(`.tab-row[data-ci="${ci}"][data-ti="${ti}"]`);
   if (row) row.classList.add('selected');
 
-  const col = state.collections[ci];
   if (col.gridded) {
     state.gridCollection = ci;
     showGridView(ci);

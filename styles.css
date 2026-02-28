@@ -104,6 +104,10 @@ body {
 /* ── Collection widget ── */
 .collection {
   margin: 0 6px;
+  border-radius: 6px;
+}
+.collection-active {
+  background: rgba(217, 119, 87, 0.08);
 }
 
 .collection-header {
