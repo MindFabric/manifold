@@ -60,7 +60,7 @@ function scrollTerminalToBottom(inst) {
 }
 
 // ── Terminal creation ──
-function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt) {
+function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt, shellOnly, customCmd) {
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 5000,
@@ -100,7 +100,7 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
   // Spawn backend pty
-  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null });
+  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null, shell: shellOnly || false, cmd: customCmd || null });
 
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
@@ -115,6 +115,7 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
       return false;
     }
     if (ctrl && e.shiftKey && e.key === 'V') {
+      e.preventDefault();
       navigator.clipboard.readText().then(text => {
         if (text) manifold.sendInput(tabId, text);
       });
@@ -284,9 +285,17 @@ function renderCollections() {
         </div>
         <input class="collection-rename" type="text" value="${escAttr(col.name)}">
         <div class="collection-btns">
-<button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
+          <button class="collection-btn grid-btn" data-ci="${ci}" title="Grid view">${'\u229E'}</button>
           <button class="collection-btn-del del-btn" data-ci="${ci}" title="Delete collection">${'\u2715'}</button>
-          <button class="collection-btn add-btn" data-ci="${ci}" title="New session">+</button>
+          <div class="add-menu-wrap">
+            <button class="collection-btn add-trigger" data-ci="${ci}" title="New...">+</button>
+            <div class="add-menu" data-ci="${ci}">
+              <button class="add-menu-item add-btn" data-ci="${ci}"><span class="add-menu-icon">&#x2726;</span> Claude</button>
+              <button class="add-menu-item term-btn" data-ci="${ci}"><span class="add-menu-icon">&gt;_</span> Terminal</button>
+              ${(col.commands || []).map((cmd, cmdI) => `<button class="add-menu-item cmd-btn" data-ci="${ci}" data-cmdi="${cmdI}" title="${escAttr(cmd.cmd)}"><span class="add-menu-icon">&#x26A1;</span> ${escHtml(cmd.name)}</button>`).join('')}
+              <button class="add-menu-item addcmd-btn" data-ci="${ci}"><span class="add-menu-icon">+</span> Add command</button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="collection-body ${col.expanded ? '' : 'collapsed'}" data-ci="${ci}">
@@ -412,6 +421,15 @@ function bindCollectionEvents() {
       input.onblur = finish;
     });
 
+    // Right-click context menu
+    el.addEventListener('contextmenu', (e) => {
+      if (e.target.classList.contains('row-rename')) return;
+      e.preventDefault();
+      const ci = parseInt(el.dataset.ci);
+      const ti = parseInt(el.dataset.ti);
+      showTabContextMenu(e.clientX, e.clientY, ci, ti);
+    });
+
     // Drag and drop reordering
     el.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
@@ -473,14 +491,6 @@ function bindCollectionEvents() {
     });
   });
 
-  // Add session button
-  document.querySelectorAll('.add-btn').forEach((el) => {
-    el.addEventListener('click', () => {
-      const ci = parseInt(el.dataset.ci);
-      addSession(ci);
-    });
-  });
-
   // Delete collection button
   document.querySelectorAll('.del-btn').forEach((el) => {
     el.addEventListener('click', () => {
@@ -495,6 +505,43 @@ function bindCollectionEvents() {
       const ci = parseInt(el.dataset.ci);
       toggleGrid(ci);
     });
+  });
+
+  // Add menu items
+  document.querySelectorAll('.add-menu-item').forEach((el) => {
+    el.addEventListener('click', () => {
+      const ci = parseInt(el.dataset.ci);
+      // Close menu
+      const wrap = el.closest('.add-menu-wrap');
+      if (wrap) wrap.classList.remove('menu-open');
+
+      if (el.classList.contains('add-btn')) {
+        addSession(ci);
+      } else if (el.classList.contains('term-btn')) {
+        addTerminal(ci);
+      } else if (el.classList.contains('cmd-btn')) {
+        const cmdI = parseInt(el.dataset.cmdi);
+        const col = state.collections[ci];
+        if (col && col.commands && col.commands[cmdI]) {
+          launchCommand(ci, col.commands[cmdI]);
+        }
+      } else if (el.classList.contains('addcmd-btn')) {
+        addCommandToCollection(ci);
+      }
+    });
+
+    // Right-click to delete custom commands
+    if (el.classList.contains('cmd-btn')) {
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const ci = parseInt(el.dataset.ci);
+        const cmdI = parseInt(el.dataset.cmdi);
+        const col = state.collections[ci];
+        if (col && col.commands && col.commands[cmdI]) {
+          removeCommandFromCollection(ci, cmdI);
+        }
+      });
+    }
   });
 
 }
@@ -594,6 +641,148 @@ function addSession(ci, cwd = null) {
   saveState();
 }
 
+function addTerminal(ci, cwd = null) {
+  const col = state.collections[ci];
+  if (!col) return;
+
+  const wasGridded = col.gridded;
+  if (wasGridded) hideGridView();
+
+  const tabId = genTabId();
+  const dir = cwd || col.path;
+  const name = `Terminal ${col.tabs.length + 1}`;
+
+  col.tabs.push({ id: tabId, name, cwd: dir, shell: true });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, true);
+
+  col.expanded = true;
+  selectTab(ci, col.tabs.length - 1);
+  renderCollections();
+
+  if (wasGridded) showGridView(ci);
+  saveState();
+}
+
+function launchCommand(ci, command) {
+  const col = state.collections[ci];
+  if (!col) return;
+
+  const wasGridded = col.gridded;
+  if (wasGridded) hideGridView();
+
+  const tabId = genTabId();
+  const dir = col.path;
+  const name = command.name;
+
+  col.tabs.push({ id: tabId, name, cwd: dir, cmd: command.cmd });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, false, command.cmd);
+
+  col.expanded = true;
+  selectTab(ci, col.tabs.length - 1);
+  renderCollections();
+
+  if (wasGridded) showGridView(ci);
+  saveState();
+}
+
+// ── Input dialog helper ──
+function showInputDialog(title, placeholder) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('input-dialog-overlay');
+    const titleEl = document.getElementById('input-dialog-title');
+    const field = document.getElementById('input-dialog-field');
+    const okBtn = document.getElementById('input-dialog-ok');
+    const cancelBtn = document.getElementById('input-dialog-cancel');
+
+    titleEl.textContent = title;
+    field.value = '';
+    field.placeholder = placeholder || '';
+    overlay.classList.remove('hidden');
+    field.focus();
+
+    function cleanup(val) {
+      overlay.classList.add('hidden');
+      field.onkeydown = null;
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      overlay.onclick = null;
+      resolve(val);
+    }
+
+    okBtn.onclick = () => cleanup(field.value.trim() || null);
+    cancelBtn.onclick = () => cleanup(null);
+    overlay.onclick = (e) => { if (e.target === overlay) cleanup(null); };
+    field.onkeydown = (e) => {
+      if (e.key === 'Enter') cleanup(field.value.trim() || null);
+      if (e.key === 'Escape') cleanup(null);
+    };
+  });
+}
+
+async function addCommandToCollection(ci) {
+  const col = state.collections[ci];
+  if (!col) return;
+
+  const name = await showInputDialog('Command name', 'e.g. Deriv Claude');
+  if (!name) return;
+
+  const cmd = await showInputDialog('Command to run', 'e.g. deriv-claude');
+  if (!cmd) return;
+
+  if (!col.commands) col.commands = [];
+  col.commands.push({ name, cmd });
+  renderCollections();
+  saveState();
+}
+
+// ── Fork session ──
+async function forkSession(ci, ti) {
+  const col = state.collections[ci];
+  if (!col) return;
+  const tab = col.tabs[ti];
+  if (!tab) return;
+
+  // Get conversation ID from backend (may have been detected after spawn)
+  const convoId = tab.conversationId || await manifold.getConversationId(tab.id);
+  if (!convoId) {
+    // No conversation to fork — shell or too early
+    console.warn('No conversation ID to fork');
+    return;
+  }
+
+  const newId = await manifold.forkConversation({ conversationId: convoId, cwd: tab.cwd });
+  if (!newId) return;
+
+  if (col.gridded) hideGridView();
+
+  const tabId = genTabId();
+  const name = `${tab.name} (fork)`;
+
+  col.tabs.push({ id: tabId, name, cwd: tab.cwd, conversationId: newId });
+  createTerminalInstance(tabId, tab.cwd, newId, name, col.name);
+
+  col.expanded = true;
+
+  // Auto-enable grid view so original + fork are side by side
+  if (!col.gridded) {
+    col.gridded = true;
+    state.gridCollection = ci;
+  }
+
+  selectTab(ci, col.tabs.length - 1);
+  renderCollections();
+  showGridView(ci);
+  saveState();
+}
+
+function removeCommandFromCollection(ci, cmdIdx) {
+  const col = state.collections[ci];
+  if (!col || !col.commands) return;
+  col.commands.splice(cmdIdx, 1);
+  renderCollections();
+  saveState();
+}
+
 function closeSession(ci, ti) {
   const totalTabs = state.collections.reduce((sum, c) => sum + c.tabs.length, 0);
   if (totalTabs <= 1) return;
@@ -648,7 +837,7 @@ async function addCollection(askPath = false) {
   if (!name) name = `Collection ${state.collections.length + 1}`;
   if (!folderPath) folderPath = homeDir || '/';
 
-  const col = { name, path: folderPath, expanded: true, gridded: false, tabs: [] };
+  const col = { name, path: folderPath, expanded: true, gridded: false, commands: [], tabs: [] };
   state.collections.push(col);
   const ci = state.collections.length - 1;
 
@@ -812,10 +1001,13 @@ async function saveState() {
       path: col.path,
       expanded: col.expanded,
       gridded: col.gridded || false,
+      commands: col.commands || [],
       tabs: col.tabs.map((t) => ({
         name: t.name,
         cwd: t.cwd,
         conversationId: t.conversationId || null,
+        shell: t.shell || false,
+        cmd: t.cmd || null,
       })),
     })),
     activeCollection: state.activeCollectionIdx,
@@ -830,7 +1022,11 @@ document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   let handled = false;
 
-  if (ctrl && e.key === 't') {
+  if (ctrl && e.shiftKey && e.key === 'T') {
+    const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
+    if (state.collections[ci]) addTerminal(ci);
+    handled = true;
+  } else if (ctrl && e.key === 't') {
     const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
     if (state.collections[ci]) addSession(ci);
     handled = true;
@@ -850,6 +1046,13 @@ document.addEventListener('keydown', (e) => {
 
   if (ctrl && e.key === 'y') {
     addCollection(true);
+    handled = true;
+  }
+
+  if (ctrl && e.key === 'd') {
+    if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) {
+      forkSession(state.activeCollectionIdx, state.activeTabIdx);
+    }
     handled = true;
   }
 
@@ -926,6 +1129,64 @@ document.addEventListener('keydown', (e) => {
   }
 }, true);
 
+// ── Tab context menu ──
+function showTabContextMenu(x, y, ci, ti) {
+  dismissContextMenu();
+  const tab = state.collections[ci]?.tabs[ti];
+  if (!tab) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  const isClaudeSession = !tab.shell && !tab.cmd;
+
+  const items = [];
+  if (isClaudeSession) {
+    items.push({ label: 'Fork session', hint: 'Ctrl+D', action: () => forkSession(ci, ti) });
+  }
+  items.push({ label: 'Close', hint: 'Ctrl+W', action: () => closeSession(ci, ti) });
+
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'ctx-menu-item';
+    row.innerHTML = `<span>${item.label}</span><span class="ctx-menu-hint">${item.hint}</span>`;
+    row.addEventListener('click', () => { dismissContextMenu(); item.action(); });
+    menu.appendChild(row);
+  }
+
+  document.body.appendChild(menu);
+
+  // Clamp to viewport
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+  });
+
+  // Dismiss on click outside or Escape
+  setTimeout(() => {
+    document.addEventListener('mousedown', dismissContextMenuOutside);
+    document.addEventListener('keydown', dismissContextMenuOnEsc);
+  }, 0);
+}
+
+function dismissContextMenu() {
+  const existing = document.querySelector('.tab-context-menu');
+  if (existing) existing.remove();
+  document.removeEventListener('mousedown', dismissContextMenuOutside);
+  document.removeEventListener('keydown', dismissContextMenuOnEsc);
+}
+
+function dismissContextMenuOutside(e) {
+  if (!e.target.closest('.tab-context-menu')) dismissContextMenu();
+}
+
+function dismissContextMenuOnEsc(e) {
+  if (e.key === 'Escape') dismissContextMenu();
+}
+
 // ── Activity polling ──
 setInterval(async () => {
   const tabIds = [...terminalInstances.keys()];
@@ -999,8 +1260,10 @@ settingsOverlay.addEventListener('click', (e) => {
 function populateShortcuts(isMac) {
   const mod = isMac ? '\u2318' : 'Ctrl';
   const shortcuts = [
-    [`${mod}+T`, 'New session'],
+    [`${mod}+T`, 'New Claude session'],
+    [`${mod}+Shift+T`, 'New terminal'],
     [`${mod}+Y`, 'New collection'],
+    [`${mod}+D`, 'Fork session'],
     [`${mod}+W`, 'Close session'],
     [`${mod}+G`, 'Toggle grid view'],
     [`${mod}+1-9`, 'Switch to tab N'],
@@ -1104,6 +1367,7 @@ async function restoreFromState(data) {
       path: colData.path || homeDir || '/',
       expanded: colData.expanded !== false,
       gridded: colData.gridded || false,
+      commands: colData.commands || [],
       tabs: [],
     };
 
@@ -1114,13 +1378,16 @@ async function restoreFromState(data) {
     for (const tabData of tabs) {
       const tabId = genTabId();
       const cwd = tabData.cwd || col.path;
+      const isNonClaude = tabData.shell || tabData.cmd;
       col.tabs.push({
         id: tabId,
         name: tabData.name || 'Session',
         cwd,
         conversationId: tabData.conversationId || null,
+        shell: tabData.shell || false,
+        cmd: tabData.cmd || null,
       });
-      createTerminalInstance(tabId, cwd, tabData.conversationId || null, tabData.name || 'Session', col.name);
+      createTerminalInstance(tabId, cwd, isNonClaude ? null : (tabData.conversationId || null), tabData.name || 'Session', col.name, null, tabData.shell || false, tabData.cmd || null);
     }
 
     state.collections.push(col);
@@ -1144,7 +1411,7 @@ async function restoreFromState(data) {
 
     const mod = isMac ? 'Cmd' : 'Ctrl';
     document.getElementById('header-hints').textContent =
-      `${mod}+T session | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid | Alt+\u2190\u2192 sessions | Alt+\u2191\u2193 collections`;
+      `${mod}+T claude | ${mod}+D fork | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid`;
     populateShortcuts(isMac);
 
     const savedState = await manifold.loadState();

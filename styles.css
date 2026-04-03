@@ -183,6 +183,88 @@ body {
   justify-content: center;
 }
 .collection-btn:hover { color: #D97757; }
+
+/* ── Add menu dropdown ── */
+.add-menu-wrap {
+  position: relative;
+}
+.add-trigger {
+  font-size: 16px;
+  font-weight: bold;
+}
+.add-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 100;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 150px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.add-menu-wrap:hover .add-menu,
+.add-menu-wrap.menu-open .add-menu {
+  display: block;
+}
+.add-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: #ccc;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.add-menu-item:hover {
+  background: #333;
+  color: #D97757;
+}
+.add-menu-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+/* Tab context menu */
+.tab-context-menu {
+  position: fixed;
+  z-index: 200;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  color: #ccc;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-menu-item:hover {
+  background: #333;
+  color: #D97757;
+}
+.ctx-menu-hint {
+  color: #555;
+  font-size: 11px;
+  margin-left: 16px;
+}
+
 .collection-btn.active { color: #D97757; }
 .collection-btn-del {
   color: #444;
@@ -629,4 +711,68 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #3a3a3a;
+}
+
+/* ── Input dialog ── */
+#input-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+#input-dialog {
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 16px 20px;
+  width: 320px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+#input-dialog-title {
+  font-size: 13px;
+  color: #999;
+  margin-bottom: 10px;
+}
+#input-dialog-field {
+  width: 100%;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #d0d0d0;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+#input-dialog-field:focus {
+  border-color: #D97757;
+}
+#input-dialog-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+#input-dialog-btns button {
+  background: #333;
+  border: none;
+  border-radius: 4px;
+  color: #ccc;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+#input-dialog-btns button:hover {
+  background: #444;
+}
+#input-dialog-ok {
+  background: #D97757 !important;
+  color: #1a1a1a !important;
+}
+#input-dialog-ok:hover {
+  background: #e08867 !important;
 }

@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
+const crypto = require('crypto');
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -83,7 +84,7 @@ ipcMain.handle('get-platform', () => process.platform);
 
 // ── Terminal management ──
 
-ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt }) => {
+ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd }) => {
   const home = os.homedir();
   const dir = cwd || home;
 
@@ -91,37 +92,83 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   delete cleanEnv.CLAUDECODE;
   delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
 
-  // Build tool command with resume support
-  let toolArgs;
-  let initialPrompt = prompt || null;
-  if (conversationId) {
-    toolArgs = `${getToolCmd()} --resume "${conversationId}"`;
-  } else {
-    toolArgs = getToolCmd();
-  }
-
   let ptyProcess;
+  let initialPrompt = prompt || null;
 
-  if (IS_WIN) {
-    const wslDir = winToWslPath(dir);
-    const shellCmd = `cd "${wslDir}" && ${toolArgs}; exec bash`;
-    ptyProcess = pty.spawn('wsl.exe', ['bash', '-c', shellCmd], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: dir,
-      env: cleanEnv,
-    });
+  if (customCmd) {
+    // Custom command terminal
+    if (IS_WIN) {
+      const wslDir = winToWslPath(dir);
+      const shellCmd = `cd "${wslDir}" && ${customCmd}; exec bash`;
+      ptyProcess = pty.spawn('wsl.exe', ['bash', '-c', shellCmd], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    } else {
+      const userShell = process.env.SHELL || '/bin/bash';
+      const runCmd = `cd "${dir}" && ${customCmd}; exec ${userShell}`;
+      ptyProcess = pty.spawn(userShell, ['-c', runCmd], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    }
+  } else if (shellOnly) {
+    // Plain terminal — no Claude
+    if (IS_WIN) {
+      const wslDir = winToWslPath(dir);
+      ptyProcess = pty.spawn('wsl.exe', ['bash', '-c', `cd "${wslDir}" && exec bash`], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    } else {
+      const userShell = process.env.SHELL || '/bin/bash';
+      ptyProcess = pty.spawn(userShell, [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    }
   } else {
-    const shell = process.env.SHELL || '/bin/bash';
-    const cmd = `cd "${dir}" && ${toolArgs}`;
-    ptyProcess = pty.spawn(shell, ['-c', `${cmd}; exec ${shell}`], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: dir,
-      env: cleanEnv,
-    });
+    // Build tool command with resume support
+    let toolArgs;
+    if (conversationId) {
+      toolArgs = `${getToolCmd()} --resume "${conversationId}"`;
+    } else {
+      toolArgs = getToolCmd();
+    }
+
+    if (IS_WIN) {
+      const wslDir = winToWslPath(dir);
+      const shellCmd = `cd "${wslDir}" && ${toolArgs}; exec bash`;
+      ptyProcess = pty.spawn('wsl.exe', ['bash', '-c', shellCmd], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    } else {
+      const userShell = process.env.SHELL || '/bin/bash';
+      const cmd = `cd "${dir}" && ${toolArgs}`;
+      ptyProcess = pty.spawn(userShell, ['-c', `${cmd}; exec ${userShell}`], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    }
   }
 
   // ── Data batching: accumulate PTY output, flush every 16ms ──
@@ -152,13 +199,14 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   });
 
   // Conversation ID detection (watches ~/.claude/projects/ for new .jsonl files)
-  const projectDir = getProjectDir(dir);
-  const beforeConvos = new Set(listConversations(projectDir));
+  const isNonClaude = shellOnly || customCmd;
+  const projectDir = isNonClaude ? null : getProjectDir(dir);
+  const beforeConvos = isNonClaude ? new Set() : new Set(listConversations(projectDir));
   const spawnTime = Date.now();
   let detectedConvoId = conversationId || null;
 
   let convoCheck = null;
-  if (!conversationId) {
+  if (!conversationId && !isNonClaude) {
     let checks = 0;
     convoCheck = setInterval(() => {
       checks++;
@@ -288,6 +336,19 @@ function listConversations(projectDir) {
     return [];
   }
 }
+
+// ── Fork conversation ──
+
+ipcMain.handle('fork-conversation', (event, { conversationId, cwd }) => {
+  if (!conversationId || !cwd) return null;
+  const projectDir = getProjectDir(cwd);
+  const srcFile = path.join(projectDir, conversationId + '.jsonl');
+  if (!fs.existsSync(srcFile)) return null;
+  const newId = crypto.randomUUID();
+  const dstFile = path.join(projectDir, newId + '.jsonl');
+  fs.copyFileSync(srcFile, dstFile);
+  return newId;
+});
 
 // ── State persistence ──
 
