@@ -5,60 +5,87 @@
 <h1 align="center">Manifold</h1>
 
 <p align="center">
-  A workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>. Run multiple sessions in parallel, organize them into collections, and monitor everything in grid view.
+  <strong>Workspace manager for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a></strong><br>
+  Run parallel sessions, organize by project, fork conversations, and watch it all in grid view.
 </p>
 
 <p align="center">
   <img src="screenshots/Screenshot From 2026-02-28 11-12-05.png" alt="Manifold grid view" width="900">
 </p>
 
+<p align="center">
+  <a href="#getting-started">Getting Started</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="#keyboard-shortcuts">Shortcuts</a> &middot;
+  <a href="#building">Building</a>
+</p>
+
 ---
 
-## Getting started
+## Getting Started
 
 ```bash
 git clone https://github.com/MindFabric/manifold.git && cd manifold && npm install && npm start
 ```
 
-That's it. Clone, install, run — one line.
+> Requires [Node.js 20+](https://nodejs.org/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed globally.
 
 ## Features
 
-**Terminal multiplexing** — Run many Claude Code sessions at once, organized into named collections (one per project, or however you like). Each session gets its own pseudo-terminal with 5000 lines of scrollback.
+### Sessions & Collections
+Organize your work into **collections** — one per project, repo, or however you like. Each collection holds multiple sessions that persist across restarts. Drag to reorder, double-click to rename.
 
-**Grid view** — Press `Ctrl+G` to see every session in the active collection rendered simultaneously. Great for watching a build, tests, and a dev server at the same time.
+### Grid View
+Toggle grid view with `Ctrl+G` to see every session in a collection at once. Perfect for monitoring builds, tests, and dev servers side by side.
 
-**GPU-accelerated rendering** — Terminals use WebGL when available, with automatic fallback to Canvas2D. Software renderers (llvmpipe/SwiftShader) are detected and skipped.
+### Context Forking
+Press `Ctrl+Shift+F` to fork the active Claude session. Manifold copies the conversation history and opens both the original and fork in grid view — branch your thinking without losing context.
 
-**Conversation tracking** — Manifold detects when Claude Code starts a new conversation and saves the ID. Close a tab, reopen it later, and you can resume exactly where you left off.
+### Shell Terminals & Custom Commands
+Not everything needs Claude. Add plain shell terminals (`Ctrl+Shift+T`) or save custom commands per collection (e.g. `docker compose up`, `npm run dev`) for one-click launch.
 
-**State persistence** — Collections, tabs, working directories, conversation IDs, and UI preferences are saved automatically and restored on launch.
+### Session Resume
+Manifold tracks Claude conversation IDs automatically. Close the app, come back later, and every session picks up where it left off.
 
-**Cross-platform** — Native builds for Linux (.deb), macOS (.dmg), and Windows (.exe). Windows runs Claude Code through WSL.
+### GPU-Accelerated Rendering
+Terminals use WebGL when available, with automatic fallback to Canvas2D. Software renderers (llvmpipe/SwiftShader) are detected and skipped.
 
-## Keyboard shortcuts
+### Cross-Platform
+Native builds for Linux (.deb), macOS (.dmg), and Windows (.exe). Windows runs Claude Code through WSL.
+
+## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+T` | New session in active collection |
-| `Ctrl+Y` | New collection (opens folder picker) |
-| `Ctrl+W` | Close active session |
+| `Ctrl+T` | New Claude session |
+| `Ctrl+Shift+T` | New shell terminal |
+| `Ctrl+Y` | New collection |
+| `Ctrl+Shift+F` | Fork session |
+| `Ctrl+W` | Close session |
 | `Ctrl+G` | Toggle grid view |
+| `Ctrl+1-9` | Jump to session N |
 | `Alt+Up/Down` | Jump between collections |
-| `Alt+Left/Right` | Cycle sessions within collection |
-| `Alt+1-9` / `Ctrl+1-9` | Jump to session N |
-| `Ctrl+Shift+C` | Copy from terminal |
-| `Ctrl+Shift+V` | Paste into terminal |
-| `Escape` | Close overlays |
+| `Alt+Left/Right` | Cycle sessions |
+| `Ctrl+Shift+C/V` | Copy / Paste |
 
-On macOS, `Cmd` replaces `Ctrl` where applicable.
+> On macOS, `Cmd` replaces `Ctrl`.
 
-## Tech stack
+## Building
+
+```bash
+npm run build:linux   # .deb
+npm run build:mac     # .dmg
+npm run build:win     # .exe
+```
+
+## Tech Stack
 
 - [Electron](https://www.electronjs.org/) — app shell
-- [xterm.js](https://xtermjs.org/) — terminal emulation (with WebGL/Canvas addons)
+- [xterm.js](https://xtermjs.org/) — terminal emulation with WebGL/Canvas addons
 - [node-pty](https://github.com/microsoft/node-pty) — pseudo-terminal spawning
-- [electron-builder](https://www.electron.build/) — packaging and distribution
+- [electron-builder](https://www.electron.build/) — packaging & distribution
+
+Vanilla JS, no frameworks, six core files. See [CLAUDE.md](CLAUDE.md) for architecture details.
 
 ## License
 
