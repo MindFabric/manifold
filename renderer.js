@@ -734,10 +734,10 @@ async function addCommandToCollection(ci) {
   const col = state.collections[ci];
   if (!col) return;
 
-  const name = await showInputDialog('Command name', 'e.g. Deriv Claude');
+  const name = await showInputDialog('Command name', 'e.g. Dev Server');
   if (!name) return;
 
-  const cmd = await showInputDialog('Command to run', 'e.g. deriv-claude');
+  const cmd = await showInputDialog('Command to run', 'e.g. npm run dev');
   if (!cmd) return;
 
   if (!col.commands) col.commands = [];
