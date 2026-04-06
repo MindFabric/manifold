@@ -105,10 +105,11 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
 
-  // Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+  // Let xterm handle only terminal keys — app shortcuts go through handleAppShortcut
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const ctrl = e.ctrlKey || e.metaKey;
+    // Clipboard
     if (ctrl && e.shiftKey && e.key === 'C') {
       const sel = term.getSelection();
       if (sel) navigator.clipboard.writeText(sel);
@@ -121,6 +122,8 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
       });
       return false;
     }
+    // Defer to central shortcut handler
+    if (handleAppShortcut(e)) return false;
     return true;
   });
 
@@ -255,6 +258,14 @@ function isTerminalVisible(tabId) {
 
 // Buffer for hidden terminals — flushed when they become visible
 const hiddenBuffers = new Map(); // tabId -> string[]
+
+// Cache conversation IDs as soon as main process detects them
+manifold.onConversationDetected((tabId, conversationId) => {
+  for (const col of state.collections) {
+    const tab = col.tabs.find(t => t.id === tabId);
+    if (tab) { tab.conversationId = conversationId; break; }
+  }
+});
 
 manifold.onTerminalData((id, data) => {
   const inst = terminalInstances.get(id);
@@ -738,17 +749,14 @@ async function addCommandToCollection(ci) {
 // ── Fork session ──
 async function forkSession(ci, ti) {
   const col = state.collections[ci];
-  if (!col) return;
+  if (!col) { showToast('No collection selected', true); return; }
   const tab = col.tabs[ti];
-  if (!tab) return;
+  if (!tab) { showToast('No session selected', true); return; }
+  if (tab.shell || tab.cmd) { showToast('Can only fork Claude sessions', true); return; }
 
-  // Get conversation ID from backend (may have been detected after spawn)
   const convoId = tab.conversationId || await manifold.getConversationId(tab.id);
-  if (!convoId) {
-    // No conversation to fork — shell or too early
-    console.warn('No conversation ID to fork');
-    return;
-  }
+  if (!convoId) { showToast('No conversation yet — send a message first', true); return; }
+  tab.conversationId = convoId;
 
   const newId = await manifold.forkConversation({ conversationId: convoId, cwd: tab.cwd });
   if (!newId) return;
@@ -762,12 +770,8 @@ async function forkSession(ci, ti) {
   createTerminalInstance(tabId, tab.cwd, newId, name, col.name);
 
   col.expanded = true;
-
-  // Auto-enable grid view so original + fork are side by side
-  if (!col.gridded) {
-    col.gridded = true;
-    state.gridCollection = ci;
-  }
+  col.gridded = true;
+  state.gridCollection = ci;
 
   selectTab(ci, col.tabs.length - 1);
   renderCollections();
@@ -784,9 +788,6 @@ function removeCommandFromCollection(ci, cmdIdx) {
 }
 
 function closeSession(ci, ti) {
-  const totalTabs = state.collections.reduce((sum, c) => sum + c.tabs.length, 0);
-  if (totalTabs <= 1) return;
-
   const col = state.collections[ci];
   const tab = col.tabs[ti];
   if (!tab) return;
@@ -808,11 +809,19 @@ function closeSession(ci, ti) {
       const newTi = Math.min(ti, col.tabs.length - 1);
       selectTab(ci, newTi);
     } else {
+      // Find another collection with tabs, or go empty
+      let found = false;
       for (let i = 0; i < state.collections.length; i++) {
         if (state.collections[i].tabs.length > 0) {
           selectTab(i, 0);
+          found = true;
           break;
         }
+      }
+      if (!found) {
+        state.activeTabIdx = -1;
+        for (const child of terminalSingle.children) child.style.display = 'none';
+        hideGridView();
       }
     }
   }
@@ -853,9 +862,8 @@ async function addCollection(askPath = false) {
 }
 
 function deleteCollection(ci) {
-  if (state.collections.length <= 1) return;
-
   const col = state.collections[ci];
+  if (!col) return;
 
   if (col.gridded) {
     hideGridView();
@@ -868,22 +876,36 @@ function deleteCollection(ci) {
 
   state.collections.splice(ci, 1);
 
-  if (state.activeCollectionIdx >= state.collections.length) {
-    state.activeCollectionIdx = state.collections.length - 1;
-  }
-  if (state.activeCollectionIdx === ci || state.activeCollectionIdx < 0) {
-    for (let i = 0; i < state.collections.length; i++) {
-      if (state.collections[i].tabs.length > 0) {
-        selectTab(i, 0);
-        break;
+  state.gridCollection = null;
+
+  if (state.collections.length === 0) {
+    state.activeCollectionIdx = -1;
+    state.activeTabIdx = -1;
+    // Clear terminal area
+    for (const child of terminalSingle.children) child.style.display = 'none';
+    hideGridView();
+  } else {
+    if (state.activeCollectionIdx >= state.collections.length) {
+      state.activeCollectionIdx = state.collections.length - 1;
+    }
+    if (state.activeCollectionIdx === ci || state.activeCollectionIdx < 0) {
+      let found = false;
+      for (let i = 0; i < state.collections.length; i++) {
+        if (state.collections[i].tabs.length > 0) {
+          selectTab(i, 0);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        state.activeCollectionIdx = 0;
+        state.activeTabIdx = -1;
       }
     }
-  }
-
-  state.gridCollection = null;
-  for (let i = 0; i < state.collections.length; i++) {
-    if (state.collections[i].gridded) {
-      if (i === state.activeCollectionIdx) state.gridCollection = i;
+    for (let i = 0; i < state.collections.length; i++) {
+      if (state.collections[i].gridded && i === state.activeCollectionIdx) {
+        state.gridCollection = i;
+      }
     }
   }
 
@@ -987,13 +1009,18 @@ function hideGridView() {
 
 // ── State persistence ──
 async function saveState() {
+  // Conversation IDs are cached on tab objects by the activity poll.
+  // Only fetch for tabs that still lack one (e.g. freshly spawned).
   const allTabs = state.collections.flatMap(col => col.tabs);
-  const convoResults = await Promise.all(
-    allTabs.map(tab => manifold.getConversationId(tab.id).catch(() => null))
-  );
-  allTabs.forEach((tab, i) => {
-    if (convoResults[i]) tab.conversationId = convoResults[i];
-  });
+  const missing = allTabs.filter(t => !t.conversationId && !t.shell && !t.cmd);
+  if (missing.length > 0) {
+    const results = await Promise.all(
+      missing.map(tab => manifold.getConversationId(tab.id).catch(() => null))
+    );
+    missing.forEach((tab, i) => {
+      if (results[i]) tab.conversationId = results[i];
+    });
+  }
 
   const data = {
     collections: state.collections.map((col) => ({
@@ -1017,113 +1044,110 @@ async function saveState() {
   await manifold.saveState(data);
 }
 
-// ── Keybindings ──
-document.addEventListener('keydown', (e) => {
+// ── Keybindings (single source of truth) ──
+// Returns true if the event matched an app shortcut.
+// Called from both xterm's key handler and the document listener.
+// Toast notification
+function showToast(msg, isError) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.style.cssText = 'position:fixed;top:8px;right:8px;padding:8px 14px;border-radius:6px;font-size:13px;z-index:99999;font-family:monospace;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? '#cc0000' : '#D97757';
+  el.style.color = isError ? '#fff' : '#000';
+  el.style.display = 'block';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function handleAppShortcut(e) {
   const ctrl = e.ctrlKey || e.metaKey;
-  let handled = false;
 
-  if (ctrl && e.shiftKey && e.key === 'T') {
-    const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
-    if (state.collections[ci]) addTerminal(ci);
-    handled = true;
-  } else if (ctrl && e.key === 't') {
-    const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
-    if (state.collections[ci]) addSession(ci);
-    handled = true;
-  }
-
-  if (ctrl && e.key === 'w') {
-    if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) {
-      closeSession(state.activeCollectionIdx, state.activeTabIdx);
+  // Ctrl+Shift combos — use e.code for reliability across platforms
+  if (ctrl && e.shiftKey) {
+    if (e.code === 'KeyF') {
+      if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) forkSession(state.activeCollectionIdx, state.activeTabIdx);
+      return true;
     }
-    handled = true;
-  }
-
-  if (ctrl && e.key === 'p') {
-    addCollection(true);
-    handled = true;
-  }
-
-  if (ctrl && e.key === 'y') {
-    addCollection(true);
-    handled = true;
-  }
-
-  if (ctrl && e.key === 'd') {
-    if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) {
-      forkSession(state.activeCollectionIdx, state.activeTabIdx);
+    if (e.code === 'KeyT') {
+      const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
+      if (state.collections[ci]) addTerminal(ci);
+      return true;
     }
-    handled = true;
   }
 
-  if (ctrl && e.key === 'g') {
-    if (state.activeCollectionIdx >= 0) {
-      toggleGrid(state.activeCollectionIdx);
+  // Ctrl combos (no shift)
+  if (ctrl && !e.shiftKey) {
+    if (e.key === 't') {
+      const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
+      if (state.collections[ci]) addSession(ci);
+      return true;
     }
-    handled = true;
-  }
-
-  // Ctrl/Cmd+1-9: switch tabs within active collection
-  if (ctrl && e.key >= '1' && e.key <= '9') {
-    const ci = state.activeCollectionIdx;
-    if (ci >= 0 && state.collections[ci]) {
-      const ti = parseInt(e.key) - 1;
-      if (ti < state.collections[ci].tabs.length) {
-        selectTab(ci, ti);
+    if (e.key === 'w') {
+      if (state.activeCollectionIdx >= 0 && state.activeTabIdx >= 0) closeSession(state.activeCollectionIdx, state.activeTabIdx);
+      return true;
+    }
+    if (e.key === 'p' || e.key === 'y') { addCollection(true); return true; }
+    if (e.key === 'g') {
+      if (state.activeCollectionIdx >= 0) toggleGrid(state.activeCollectionIdx);
+      return true;
+    }
+    if (e.key >= '1' && e.key <= '9') {
+      const ci = state.activeCollectionIdx;
+      if (ci >= 0 && state.collections[ci]) {
+        const ti = parseInt(e.key) - 1;
+        if (ti < state.collections[ci].tabs.length) selectTab(ci, ti);
       }
-    }
-    handled = true;
-  }
-
-  // Escape: close settings overlay
-  if (e.key === 'Escape') {
-    if (!settingsOverlay.classList.contains('hidden')) {
-      settingsOverlay.classList.add('hidden');
-      handled = true;
+      return true;
     }
   }
 
-  // Alt+Up/Down: jump between collections
-  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-    const cols = state.collections;
-    if (cols.length > 1) {
-      const dir = e.key === 'ArrowDown' ? 1 : -1;
-      const ci = (state.activeCollectionIdx + dir + cols.length) % cols.length;
-      const col = cols[ci];
-      if (col.tabs.length > 0) {
-        selectTab(ci, 0);
-        renderCollections();
+  // Alt combos
+  if (e.altKey) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const cols = state.collections;
+      if (cols.length > 1) {
+        const dir = e.key === 'ArrowDown' ? 1 : -1;
+        const ci = (state.activeCollectionIdx + dir + cols.length) % cols.length;
+        if (cols[ci].tabs.length > 0) { selectTab(ci, 0); renderCollections(); }
       }
+      return true;
     }
-    handled = true;
-  }
-
-  // Alt+Left/Right: cycle sessions within active collection
-  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-    const ci = state.activeCollectionIdx;
-    const col = state.collections[ci];
-    if (col && col.tabs.length > 1) {
-      const dir = e.key === 'ArrowRight' ? 1 : -1;
-      const ti = (state.activeTabIdx + dir + col.tabs.length) % col.tabs.length;
-      selectTab(ci, ti);
-      renderCollections();
-    }
-    handled = true;
-  }
-
-  // Alt+1-9: switch tabs within active collection
-  if (e.altKey && e.key >= '1' && e.key <= '9') {
-    const ci = state.activeCollectionIdx;
-    if (ci >= 0 && state.collections[ci]) {
-      const ti = parseInt(e.key) - 1;
-      if (ti < state.collections[ci].tabs.length) {
-        selectTab(ci, ti);
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const ci = state.activeCollectionIdx;
+      const col = state.collections[ci];
+      if (col && col.tabs.length > 1) {
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        const ti = (state.activeTabIdx + dir + col.tabs.length) % col.tabs.length;
+        selectTab(ci, ti); renderCollections();
       }
+      return true;
     }
-    handled = true;
+    if (e.key >= '1' && e.key <= '9') {
+      const ci = state.activeCollectionIdx;
+      if (ci >= 0 && state.collections[ci]) {
+        const ti = parseInt(e.key) - 1;
+        if (ti < state.collections[ci].tabs.length) selectTab(ci, ti);
+      }
+      return true;
+    }
   }
 
-  if (handled) {
+  // Escape
+  if (e.key === 'Escape' && !settingsOverlay.classList.contains('hidden')) {
+    settingsOverlay.classList.add('hidden');
+    return true;
+  }
+
+  return false;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (handleAppShortcut(e)) {
     e.preventDefault();
     e.stopPropagation();
   }
@@ -1144,7 +1168,7 @@ function showTabContextMenu(x, y, ci, ti) {
 
   const items = [];
   if (isClaudeSession) {
-    items.push({ label: 'Fork session', hint: 'Ctrl+D', action: () => forkSession(ci, ti) });
+    items.push({ label: 'Fork session', hint: 'Ctrl+Shift+F', action: () => forkSession(ci, ti) });
   }
   items.push({ label: 'Close', hint: 'Ctrl+W', action: () => closeSession(ci, ti) });
 
@@ -1204,7 +1228,7 @@ setInterval(async () => {
 
 // ── Auto-save ──
 setInterval(saveState, 30000);
-manifold.onSaveState(() => saveState());
+manifold.onSaveState(() => saveState().then(() => manifold.saveStateDone()));
 
 // ── Window focus handler ──
 manifold.onWindowFocus(() => {
@@ -1263,7 +1287,7 @@ function populateShortcuts(isMac) {
     [`${mod}+T`, 'New Claude session'],
     [`${mod}+Shift+T`, 'New terminal'],
     [`${mod}+Y`, 'New collection'],
-    [`${mod}+D`, 'Fork session'],
+    [`${mod}+Shift+F`, 'Fork session'],
     [`${mod}+W`, 'Close session'],
     [`${mod}+G`, 'Toggle grid view'],
     [`${mod}+1-9`, 'Switch to tab N'],
@@ -1353,7 +1377,8 @@ async function initWorkspace(savedData) {
     selectTab(0, 0);
   }
   renderCollections();
-  saveState();
+  // Delay first save so conversation detection has time to run
+  setTimeout(saveState, 10000);
 }
 
 async function restoreFromState(data) {
@@ -1411,7 +1436,7 @@ async function restoreFromState(data) {
 
     const mod = isMac ? 'Cmd' : 'Ctrl';
     document.getElementById('header-hints').textContent =
-      `${mod}+T claude | ${mod}+D fork | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid`;
+      `${mod}+T claude | ${mod}+Shift+F fork | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid`;
     populateShortcuts(isMac);
 
     const savedState = await manifold.loadState();

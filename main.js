@@ -62,10 +62,15 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     e.preventDefault();
     mainWindow.webContents.send('save-state');
+    // Wait for renderer to confirm save, with a safety timeout
+    ipcMain.once('save-state-done', () => {
+      destroyAllTerminals();
+      mainWindow.destroy();
+    });
     setTimeout(() => {
       destroyAllTerminals();
       mainWindow.destroy();
-    }, 300);
+    }, 2000);
   });
 }
 
@@ -198,10 +203,9 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
     }
   });
 
-  // Conversation ID detection (watches ~/.claude/projects/ for new .jsonl files)
+  // Conversation ID detection — find the most recently modified .jsonl after spawn
   const isNonClaude = shellOnly || customCmd;
   const projectDir = isNonClaude ? null : getProjectDir(dir);
-  const beforeConvos = isNonClaude ? new Set() : new Set(listConversations(projectDir));
   const spawnTime = Date.now();
   let detectedConvoId = conversationId || null;
 
@@ -210,23 +214,29 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
     let checks = 0;
     convoCheck = setInterval(() => {
       checks++;
-      const afterConvos = listConversations(projectDir);
-      const newConvos = afterConvos.filter(c => !beforeConvos.has(c));
-      if (newConvos.length > 0) {
-        let best = newConvos[0];
-        let bestTime = Infinity;
-        for (const c of newConvos) {
+      try {
+        const files = fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl'));
+        let best = null;
+        let bestMtime = 0;
+        for (const f of files) {
           try {
-            const stat = fs.statSync(path.join(projectDir, c + '.jsonl'));
-            const age = Math.abs(stat.birthtimeMs - spawnTime);
-            if (age < bestTime) { bestTime = age; best = c; }
+            const stat = fs.statSync(path.join(projectDir, f));
+            if (stat.mtimeMs > spawnTime && stat.mtimeMs > bestMtime) {
+              bestMtime = stat.mtimeMs;
+              best = f.replace('.jsonl', '');
+            }
           } catch (_) {}
         }
-        detectedConvoId = best;
-        const term = terminals.get(id);
-        if (term) term.conversationId = best;
-        clearInterval(convoCheck);
-      }
+        if (best) {
+          detectedConvoId = best;
+          const term = terminals.get(id);
+          if (term) term.conversationId = best;
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('conversation-detected', { id, conversationId: best });
+          }
+          clearInterval(convoCheck);
+        }
+      } catch (_) {}
       if (checks > 30) clearInterval(convoCheck);
     }, 1000);
   }
@@ -236,7 +246,6 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
     alive: true,
     conversationId: detectedConvoId,
     spawnTime,
-    beforeConvos,
     projectDir,
     convoCheck,
     flushInterval,
@@ -298,23 +307,27 @@ ipcMain.handle('terminal-get-conversation-id', (event, { id }) => {
 
   if (term.conversationId) return term.conversationId;
 
-  // Lazy detection: check for new conversation files since launch
-  if (term.beforeConvos && term.projectDir) {
-    const afterConvos = listConversations(term.projectDir);
-    const newConvos = afterConvos.filter(c => !term.beforeConvos.has(c));
-    if (newConvos.length > 0) {
-      let best = newConvos[0];
-      let bestTime = Infinity;
-      for (const c of newConvos) {
+  // Fallback: find the most recently modified .jsonl in the project dir
+  // that was touched after this terminal spawned
+  if (term.projectDir) {
+    try {
+      const files = fs.readdirSync(term.projectDir).filter(f => f.endsWith('.jsonl'));
+      let best = null;
+      let bestMtime = 0;
+      for (const f of files) {
         try {
-          const stat = fs.statSync(path.join(term.projectDir, c + '.jsonl'));
-          const age = Math.abs(stat.birthtimeMs - (term.spawnTime || 0));
-          if (age < bestTime) { bestTime = age; best = c; }
+          const stat = fs.statSync(path.join(term.projectDir, f));
+          if (stat.mtimeMs > (term.spawnTime || 0) && stat.mtimeMs > bestMtime) {
+            bestMtime = stat.mtimeMs;
+            best = f.replace('.jsonl', '');
+          }
         } catch (_) {}
       }
-      term.conversationId = best;
-      return best;
-    }
+      if (best) {
+        term.conversationId = best;
+        return best;
+      }
+    } catch (_) {}
   }
 
   return null;
@@ -323,7 +336,7 @@ ipcMain.handle('terminal-get-conversation-id', (event, { id }) => {
 // ── Conversation tracking helpers ──
 
 function getProjectDir(cwd) {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = cwd.replace(/[^a-zA-Z0-9._-]/g, '-');
   return path.join(os.homedir(), '.claude', 'projects', encoded);
 }
 

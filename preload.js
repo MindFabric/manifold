@@ -16,9 +16,13 @@ contextBridge.exposeInMainWorld('manifold', {
   onTerminalData: (callback) => {
     ipcRenderer.on('terminal-data', (event, { id, data }) => callback(id, data));
   },
+  onConversationDetected: (callback) => {
+    ipcRenderer.on('conversation-detected', (event, { id, conversationId }) => callback(id, conversationId));
+  },
 
   // State
   saveState: (state) => ipcRenderer.invoke('save-state', state),
+  saveStateDone: () => ipcRenderer.send('save-state-done'),
   loadState: () => ipcRenderer.invoke('load-state'),
   onSaveState: (callback) => ipcRenderer.on('save-state', callback),
   onWindowFocus: (callback) => ipcRenderer.on('window-focus', callback),
