@@ -591,6 +591,57 @@ body {
   background: #1e1414;
 }
 .settings-row-btn-nuke:hover .settings-row-arrow { color: #e74c3c; }
+/* ── Settings segmented control ── */
+.settings-row-segmented {
+  padding: 4px 6px;
+}
+.settings-segmented-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.settings-segmented-top .settings-label {
+  color: #d0d0d0;
+  font-size: 12px;
+}
+.settings-segmented-top .settings-desc {
+  color: #555;
+  font-size: 10px;
+}
+.settings-kbd {
+  color: #888;
+  background: #141414;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.settings-segmented {
+  display: flex;
+  gap: 4px;
+}
+.seg-btn {
+  flex: 1;
+  padding: 8px 6px;
+  background: #141414;
+  border: 1px solid #222;
+  border-radius: 8px;
+  color: #999;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.seg-btn:hover {
+  background: #1e1e1e;
+  border-color: #333;
+  color: #d0d0d0;
+}
+.seg-btn.active {
+  border-color: #D97757;
+  color: #D97757;
+  background: #1e1614;
+}
 /* ── Settings slider ── */
 .settings-row-slider {
   padding: 10px 12px;

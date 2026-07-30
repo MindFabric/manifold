@@ -16,6 +16,7 @@ const state = {
   activeCollectionIdx: -1,
   activeTabIdx: -1,
   gridCollection: null,
+  defaultSource: 'claude', // 'claude' | 'copilot' | 'terminal' — what Ctrl/Cmd+T launches
 };
 
 // Terminal instances: tabId -> { terminal, fitAddon, element }
@@ -60,7 +61,7 @@ function scrollTerminalToBottom(inst) {
 }
 
 // ── Terminal creation ──
-function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt, shellOnly, customCmd) {
+function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt, shellOnly, customCmd, provider = 'claude', sessionId = null, resume = false) {
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 5000,
@@ -100,7 +101,7 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
   // Spawn backend pty
-  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null, shell: shellOnly || false, cmd: customCmd || null });
+  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null, shell: shellOnly || false, cmd: customCmd || null, provider, sessionId, resume });
 
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
@@ -302,6 +303,7 @@ function renderCollections() {
             <button class="collection-btn add-trigger" data-ci="${ci}" title="New...">+</button>
             <div class="add-menu" data-ci="${ci}">
               <button class="add-menu-item add-btn" data-ci="${ci}"><span class="add-menu-icon">&#x2726;</span> Claude</button>
+              <button class="add-menu-item copilot-btn" data-ci="${ci}"><span class="add-menu-icon">&#x2708;</span> Copilot</button>
               <button class="add-menu-item term-btn" data-ci="${ci}"><span class="add-menu-icon">&gt;_</span> Terminal</button>
               ${(col.commands || []).map((cmd, cmdI) => `<button class="add-menu-item cmd-btn" data-ci="${ci}" data-cmdi="${cmdI}" title="${escAttr(cmd.cmd)}"><span class="add-menu-icon">&#x26A1;</span> ${escHtml(cmd.name)}</button>`).join('')}
               <button class="add-menu-item addcmd-btn" data-ci="${ci}"><span class="add-menu-icon">+</span> Add command</button>
@@ -528,6 +530,8 @@ function bindCollectionEvents() {
 
       if (el.classList.contains('add-btn')) {
         addSession(ci);
+      } else if (el.classList.contains('copilot-btn')) {
+        addCopilot(ci);
       } else if (el.classList.contains('term-btn')) {
         addTerminal(ci);
       } else if (el.classList.contains('cmd-btn')) {
@@ -652,6 +656,38 @@ function addSession(ci, cwd = null) {
   saveState();
 }
 
+// Launch whichever source is set as the default (Ctrl/Cmd+T).
+function addDefaultSession(ci, cwd = null) {
+  switch (state.defaultSource) {
+    case 'copilot': return addCopilot(ci, cwd);
+    case 'terminal': return addTerminal(ci, cwd);
+    default: return addSession(ci, cwd);
+  }
+}
+
+function addCopilot(ci, cwd = null) {
+  const col = state.collections[ci];
+  if (!col) return;
+
+  const wasGridded = col.gridded;
+  if (wasGridded) hideGridView();
+
+  const tabId = genTabId();
+  const dir = cwd || col.path;
+  const name = `Copilot ${col.tabs.length + 1}`;
+
+  const sessionId = crypto.randomUUID();
+  col.tabs.push({ id: tabId, name, cwd: dir, provider: 'copilot', copilotSessionId: sessionId });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, false, null, 'copilot', sessionId);
+
+  col.expanded = true;
+  selectTab(ci, col.tabs.length - 1);
+  renderCollections();
+
+  if (wasGridded) showGridView(ci);
+  saveState();
+}
+
 function addTerminal(ci, cwd = null) {
   const col = state.collections[ci];
   if (!col) return;
@@ -752,7 +788,27 @@ async function forkSession(ci, ti) {
   if (!col) { showToast('No collection selected', true); return; }
   const tab = col.tabs[ti];
   if (!tab) { showToast('No session selected', true); return; }
-  if (tab.shell || tab.cmd) { showToast('Can only fork Claude sessions', true); return; }
+  if (tab.provider === 'copilot') {
+    if (!tab.copilotSessionId) { showToast('No Copilot session ID available', true); return; }
+
+    if (col.gridded) hideGridView();
+
+    const tabId = genTabId();
+    const name = `${tab.name} (fork)`;
+    col.tabs.push({ id: tabId, name, cwd: tab.cwd, provider: 'copilot', copilotSessionId: tab.copilotSessionId });
+    createTerminalInstance(tabId, tab.cwd, null, name, col.name, null, false, null, 'copilot', tab.copilotSessionId, true);
+
+    col.expanded = true;
+    col.gridded = true;
+    state.gridCollection = ci;
+    selectTab(ci, col.tabs.length - 1);
+    renderCollections();
+    showGridView(ci);
+    saveState();
+    return;
+  }
+
+  if (tab.shell || tab.cmd) { showToast('Can only fork Claude or Copilot sessions', true); return; }
 
   const convoId = tab.conversationId || await manifold.getConversationId(tab.id);
   if (!convoId) { showToast('No conversation yet — send a message first', true); return; }
@@ -1012,7 +1068,7 @@ async function saveState() {
   // Conversation IDs are cached on tab objects by the activity poll.
   // Only fetch for tabs that still lack one (e.g. freshly spawned).
   const allTabs = state.collections.flatMap(col => col.tabs);
-  const missing = allTabs.filter(t => !t.conversationId && !t.shell && !t.cmd);
+  const missing = allTabs.filter(t => !t.conversationId && !t.shell && !t.cmd && t.provider !== 'copilot');
   if (missing.length > 0) {
     const results = await Promise.all(
       missing.map(tab => manifold.getConversationId(tab.id).catch(() => null))
@@ -1033,6 +1089,8 @@ async function saveState() {
         name: t.name,
         cwd: t.cwd,
         conversationId: t.conversationId || null,
+        provider: t.provider || 'claude',
+        copilotSessionId: t.copilotSessionId || null,
         shell: t.shell || false,
         cmd: t.cmd || null,
       })),
@@ -1040,6 +1098,7 @@ async function saveState() {
     activeCollection: state.activeCollectionIdx,
     activeTab: state.activeTabIdx,
     uiScale: parseInt(scaleSlider.value) || 100,
+    defaultSource: state.defaultSource,
   };
   await manifold.saveState(data);
 }
@@ -1084,7 +1143,7 @@ function handleAppShortcut(e) {
   if (ctrl && !e.shiftKey) {
     if (e.key === 't') {
       const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
-      if (state.collections[ci]) addSession(ci);
+      if (state.collections[ci]) addDefaultSession(ci);
       return true;
     }
     if (e.key === 'w') {
@@ -1164,7 +1223,7 @@ function showTabContextMenu(x, y, ci, ti) {
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  const isClaudeSession = !tab.shell && !tab.cmd;
+  const isClaudeSession = !tab.shell && (!tab.cmd || tab.provider === 'copilot');
 
   const items = [];
   if (isClaudeSession) {
@@ -1284,7 +1343,7 @@ settingsOverlay.addEventListener('click', (e) => {
 function populateShortcuts(isMac) {
   const mod = isMac ? '\u2318' : 'Ctrl';
   const shortcuts = [
-    [`${mod}+T`, 'New Claude session'],
+    [`${mod}+T`, 'New session (default source)'],
     [`${mod}+Shift+T`, 'New terminal'],
     [`${mod}+Y`, 'New collection'],
     [`${mod}+Shift+F`, 'Fork session'],
@@ -1303,6 +1362,33 @@ function populateShortcuts(isMac) {
     `<div class="shortcut-row"><span class="shortcut-key">${key}</span><span class="shortcut-desc">${desc}</span></div>`
   ).join('');
 }
+
+// ── Default source picker ──
+const defaultSourceSeg = document.getElementById('default-source-seg');
+let headerHintMod = 'Ctrl';
+const SOURCE_LABELS = { claude: 'claude', copilot: 'copilot', terminal: 'terminal' };
+
+function updateHeaderHints() {
+  const m = headerHintMod;
+  const src = SOURCE_LABELS[state.defaultSource] || 'session';
+  document.getElementById('header-hints').textContent =
+    `${m}+T ${src} | ${m}+Shift+F fork | ${m}+Y collection | ${m}+W close | ${m}+G grid`;
+}
+
+function renderDefaultSource() {
+  defaultSourceSeg.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.source === state.defaultSource);
+  });
+  updateHeaderHints();
+}
+
+defaultSourceSeg.querySelectorAll('.seg-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.defaultSource = btn.dataset.source;
+    renderDefaultSource();
+    saveState();
+  });
+});
 
 // ── UI Scale slider ──
 const scaleSlider = document.getElementById('scale-slider');
@@ -1403,16 +1489,20 @@ async function restoreFromState(data) {
     for (const tabData of tabs) {
       const tabId = genTabId();
       const cwd = tabData.cwd || col.path;
+      const provider = tabData.provider || 'claude';
+      const copilotSessionId = tabData.copilotSessionId || null;
       const isNonClaude = tabData.shell || tabData.cmd;
       col.tabs.push({
         id: tabId,
         name: tabData.name || 'Session',
         cwd,
         conversationId: tabData.conversationId || null,
+        provider,
+        copilotSessionId,
         shell: tabData.shell || false,
         cmd: tabData.cmd || null,
       });
-      createTerminalInstance(tabId, cwd, isNonClaude ? null : (tabData.conversationId || null), tabData.name || 'Session', col.name, null, tabData.shell || false, tabData.cmd || null);
+      createTerminalInstance(tabId, cwd, isNonClaude ? null : (tabData.conversationId || null), tabData.name || 'Session', col.name, null, tabData.shell || false, tabData.cmd || null, provider, copilotSessionId, provider === 'copilot' && !!copilotSessionId);
     }
 
     state.collections.push(col);
@@ -1435,8 +1525,8 @@ async function restoreFromState(data) {
     document.body.classList.add(`platform-${platform}`);
 
     const mod = isMac ? 'Cmd' : 'Ctrl';
-    document.getElementById('header-hints').textContent =
-      `${mod}+T claude | ${mod}+Shift+F fork | ${mod}+Y collection | ${mod}+W close | ${mod}+G grid`;
+    headerHintMod = mod;
+    updateHeaderHints();
     populateShortcuts(isMac);
 
     const savedState = await manifold.loadState();
@@ -1445,6 +1535,13 @@ async function restoreFromState(data) {
     if (savedState && savedState.uiScale) {
       applyScale(savedState.uiScale);
     }
+
+    // Restore default-source preference
+    if (savedState && savedState.defaultSource) {
+      state.defaultSource = savedState.defaultSource;
+    }
+    document.getElementById('default-source-kbd').textContent = `${mod}+T`;
+    renderDefaultSource();
 
     await initWorkspace(savedState);
   } catch (err) {

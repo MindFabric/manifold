@@ -89,7 +89,7 @@ ipcMain.handle('get-platform', () => process.platform);
 
 // ── Terminal management ──
 
-ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd }) => {
+ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd, provider, sessionId, resume }) => {
   const home = os.homedir();
   const dir = cwd || home;
 
@@ -100,7 +100,32 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   let ptyProcess;
   let initialPrompt = prompt || null;
 
-  if (customCmd) {
+  if (provider === 'copilot') {
+    const copilotCmd = resume
+      ? `copilot --yolo --resume "${sessionId}"`
+      : `copilot --yolo --session-id "${sessionId}"`;
+    if (IS_WIN) {
+      const wslDir = winToWslPath(dir);
+      const shellCmd = `cd "${wslDir}" && ${copilotCmd}; exec bash`;
+      ptyProcess = pty.spawn('wsl.exe', ['bash', '-c', shellCmd], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    } else {
+      const userShell = process.env.SHELL || '/bin/bash';
+      const runCmd = `cd "${dir}" && ${copilotCmd}; exec ${userShell}`;
+      ptyProcess = pty.spawn(userShell, ['-c', runCmd], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: dir,
+        env: cleanEnv,
+      });
+    }
+  } else if (customCmd) {
     // Custom command terminal
     if (IS_WIN) {
       const wslDir = winToWslPath(dir);
@@ -204,7 +229,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   });
 
   // Conversation ID detection — find the most recently modified .jsonl after spawn
-  const isNonClaude = shellOnly || customCmd;
+  const isNonClaude = shellOnly || customCmd || provider === 'copilot';
   const projectDir = isNonClaude ? null : getProjectDir(dir);
   const spawnTime = Date.now();
   let detectedConvoId = conversationId || null;
