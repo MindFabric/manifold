@@ -4,6 +4,7 @@ const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
 const crypto = require('crypto');
+const { exec } = require('child_process');
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -89,7 +90,7 @@ ipcMain.handle('get-platform', () => process.platform);
 
 // ── Terminal management ──
 
-ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd, provider, sessionId, resume }) => {
+ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd, provider, sessionId, resume, remote }) => {
   const home = os.homedir();
   const dir = cwd || home;
 
@@ -100,7 +101,62 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   let ptyProcess;
   let initialPrompt = prompt || null;
 
-  if (provider === 'copilot') {
+  if (remote) {
+    // Remote SSH session — parse user's SSH command, spawn directly
+    const remotePath = cwd || '/';
+    const parts = remote.trim().split(/\s+/);
+    const sshBin = parts[0]; // "ssh"
+    const sshTargetArgs = parts.slice(1); // ["gs6-term"]
+
+    // Build the command to type after SSH connects
+    let remoteCmd;
+    if (shellOnly) {
+      remoteCmd = `cd "${remotePath}"`;
+    } else if (customCmd) {
+      remoteCmd = `cd "${remotePath}" && ${customCmd}`;
+    } else {
+      let toolArgs;
+      if (conversationId) {
+        toolArgs = `${getToolCmd()} --resume ${conversationId}`;
+      } else {
+        toolArgs = getToolCmd();
+      }
+      remoteCmd = `cd "${remotePath}" && ${toolArgs}`;
+    }
+
+    // Spawn SSH directly with user's exact args
+    if (IS_WIN) {
+      ptyProcess = pty.spawn('wsl.exe', [sshBin, '-t', ...sshTargetArgs], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        env: cleanEnv,
+      });
+    } else {
+      ptyProcess = pty.spawn(sshBin, ['-t', ...sshTargetArgs], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        env: cleanEnv,
+      });
+    }
+
+    // After SSH connects, send the cd + command
+    let sshReady = false;
+    let sshDataCount = 0;
+    const onSshData = (data) => {
+      sshDataCount += data.length;
+      if (!sshReady && sshDataCount > 20) {
+        sshReady = true;
+        ptyProcess.removeListener('data', onSshData);
+        setTimeout(() => {
+          ptyProcess.write(remoteCmd + '\r');
+        }, 300);
+      }
+    };
+    ptyProcess.on('data', onSshData);
+    initialPrompt = null;
+  } else if (provider === 'copilot') {
     const copilotCmd = resume
       ? `copilot --yolo --resume "${sessionId}"`
       : `copilot --yolo --session-id "${sessionId}"`;
@@ -229,7 +285,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   });
 
   // Conversation ID detection — find the most recently modified .jsonl after spawn
-  const isNonClaude = shellOnly || customCmd || provider === 'copilot';
+  const isNonClaude = shellOnly || customCmd || provider === 'copilot' || !!remote;
   const projectDir = isNonClaude ? null : getProjectDir(dir);
   const spawnTime = Date.now();
   let detectedConvoId = conversationId || null;
@@ -262,7 +318,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
           clearInterval(convoCheck);
         }
       } catch (_) {}
-      if (checks > 30) clearInterval(convoCheck);
+      if (checks > 60) clearInterval(convoCheck);
     }, 1000);
   }
 
@@ -333,12 +389,12 @@ ipcMain.handle('terminal-get-conversation-id', (event, { id }) => {
   if (term.conversationId) return term.conversationId;
 
   // Fallback: find the most recently modified .jsonl in the project dir
-  // that was touched after this terminal spawned
   if (term.projectDir) {
     try {
       const files = fs.readdirSync(term.projectDir).filter(f => f.endsWith('.jsonl'));
       let best = null;
       let bestMtime = 0;
+      // First try: files modified after spawn
       for (const f of files) {
         try {
           const stat = fs.statSync(path.join(term.projectDir, f));
@@ -347,6 +403,18 @@ ipcMain.handle('terminal-get-conversation-id', (event, { id }) => {
             best = f.replace('.jsonl', '');
           }
         } catch (_) {}
+      }
+      // Second try: if nothing found, pick the most recently modified file overall
+      if (!best) {
+        for (const f of files) {
+          try {
+            const stat = fs.statSync(path.join(term.projectDir, f));
+            if (stat.mtimeMs > bestMtime) {
+              bestMtime = stat.mtimeMs;
+              best = f.replace('.jsonl', '');
+            }
+          } catch (_) {}
+        }
       }
       if (best) {
         term.conversationId = best;
@@ -374,6 +442,29 @@ function listConversations(projectDir) {
     return [];
   }
 }
+
+// ── Scan for conversation by cwd (last resort) ──
+
+ipcMain.handle('scan-conversation', (event, { cwd }) => {
+  if (!cwd) return null;
+  const projectDir = getProjectDir(cwd);
+  try {
+    const files = fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl'));
+    let best = null;
+    let bestMtime = 0;
+    for (const f of files) {
+      try {
+        const stat = fs.statSync(path.join(projectDir, f));
+        if (stat.mtimeMs > bestMtime) {
+          bestMtime = stat.mtimeMs;
+          best = f.replace('.jsonl', '');
+        }
+      } catch (_) {}
+    }
+    return best;
+  } catch (_) {}
+  return null;
+});
 
 // ── Fork conversation ──
 
@@ -420,6 +511,78 @@ ipcMain.handle('pick-folder', async () => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+
+// ── SSH remote helpers ──
+
+ipcMain.handle('ssh-ls', async (event, { cmd, remotePath }) => {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+
+    // Parse user's SSH command and inject options + remote ls command
+    const parts = cmd.trim().split(/\s+/);
+    // e.g. ["ssh", "gs6-term"] → ["ssh", opts..., "gs6-term", "ls", "-1AF", "/path"]
+    const sshBin = parts[0]; // "ssh"
+    const sshTargetArgs = parts.slice(1); // ["gs6-term"] or ["-i", "key", "user@host"]
+    const fullArgs = ['-o', 'RequestTTY=no', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', ...sshTargetArgs, 'ls', '-1AF', remotePath];
+
+    const proc = IS_WIN
+      ? spawn('wsl.exe', [sshBin, ...fullArgs])
+      : spawn(sshBin, fullArgs);
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d; });
+    proc.stderr.on('data', (d) => { stderr += d; });
+
+    const timer = setTimeout(() => { proc.kill(); resolve({ error: 'Timeout' }); }, 10000);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        resolve({ error: stderr.trim() || `Exit code ${code}` });
+        return;
+      }
+      const entries = stdout.trim().split('\n').filter(Boolean);
+      const dirs = entries
+        .filter(e => e.endsWith('/'))
+        .map(e => e.slice(0, -1))
+        .filter(e => !e.startsWith('.'))
+        .sort();
+      resolve({ dirs, path: remotePath });
+    });
+  });
+});
+
+ipcMain.handle('ssh-test', async (event, { cmd }) => {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+
+    const parts = cmd.trim().split(/\s+/);
+    const sshBin = parts[0];
+    const sshTargetArgs = parts.slice(1);
+    const fullArgs = ['-o', 'RequestTTY=no', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', ...sshTargetArgs, 'echo', 'ok'];
+
+    const proc = IS_WIN
+      ? spawn('wsl.exe', [sshBin, ...fullArgs])
+      : spawn(sshBin, fullArgs);
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d; });
+    proc.stderr.on('data', (d) => { stderr += d; });
+
+    const timer = setTimeout(() => { proc.kill(); resolve({ ok: false, error: 'Timeout' }); }, 10000);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        resolve({ ok: false, error: stderr.trim() || `Exit code ${code}` });
+      } else {
+        resolve({ ok: stdout.trim() === 'ok' });
+      }
+    });
+  });
 });
 
 // ── App lifecycle ──

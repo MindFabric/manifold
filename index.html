@@ -82,6 +82,17 @@
               </div>
             </div>
             <div class="settings-section">
+              <div class="settings-section-title">REMOTE DESTINATIONS</div>
+              <div id="remotes-list"></div>
+              <button id="add-remote-btn" class="settings-row-btn settings-row-btn-add">
+                <div class="settings-row-btn-text">
+                  <span class="settings-label">+ Add Remote</span>
+                  <span class="settings-desc">Configure an SSH host for remote Claude sessions</span>
+                </div>
+                <span class="settings-row-arrow">&rsaquo;</span>
+              </button>
+            </div>
+            <div class="settings-section">
               <div class="settings-section-title">KEYBOARD SHORTCUTS</div>
               <div id="shortcuts-table" class="settings-shortcuts"></div>
             </div>
@@ -116,6 +127,26 @@
       <div id="input-dialog-btns">
         <button id="input-dialog-cancel">Cancel</button>
         <button id="input-dialog-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote folder browser -->
+  <div id="remote-browser-overlay" class="hidden">
+    <div id="remote-browser">
+      <div id="remote-browser-header">
+        <span id="remote-browser-title">BROWSE REMOTE</span>
+        <button id="remote-browser-close">&times;</button>
+      </div>
+      <div id="remote-browser-breadcrumb"></div>
+      <div id="remote-browser-list"></div>
+      <div id="remote-browser-footer">
+        <span id="remote-browser-path"></span>
+        <button id="remote-browser-copy" title="Copy path">&#x2398;</button>
+        <div id="remote-browser-btns">
+          <button id="remote-browser-cancel">Cancel</button>
+          <button id="remote-browser-select">Select</button>
+        </div>
       </div>
     </div>
   </div>

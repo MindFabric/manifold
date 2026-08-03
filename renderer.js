@@ -17,6 +17,7 @@ const state = {
   activeTabIdx: -1,
   gridCollection: null,
   defaultSource: 'claude', // 'claude' | 'copilot' | 'terminal' — what Ctrl/Cmd+T launches
+  remotes: [], // { name, host, defaultPath }
 };
 
 // Terminal instances: tabId -> { terminal, fitAddon, element }
@@ -61,7 +62,7 @@ function scrollTerminalToBottom(inst) {
 }
 
 // ── Terminal creation ──
-function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt, shellOnly, customCmd, provider = 'claude', sessionId = null, resume = false) {
+function createTerminalInstance(tabId, cwd, conversationId, name, collectionName, prompt, shellOnly, customCmd, provider = 'claude', sessionId = null, resume = false, remote = null) {
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 5000,
@@ -101,7 +102,7 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   terminalInstances.set(tabId, { terminal: term, fitAddon, element: el });
 
   // Spawn backend pty
-  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null, shell: shellOnly || false, cmd: customCmd || null, provider, sessionId, resume });
+  manifold.createTerminal({ id: tabId, cwd, conversationId: conversationId || null, name: name || tabId, collectionName: collectionName || '', prompt: prompt || null, shell: shellOnly || false, cmd: customCmd || null, provider, sessionId, resume, remote: remote || null });
 
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
@@ -110,7 +111,12 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const ctrl = e.ctrlKey || e.metaKey;
-    // Clipboard
+    // Clipboard — Ctrl+C copies when text is selected, otherwise sends SIGINT
+    if (ctrl && e.key === 'c' && !e.shiftKey && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection());
+      term.clearSelection();
+      return false;
+    }
     if (ctrl && e.shiftKey && e.key === 'C') {
       const sel = term.getSelection();
       if (sel) navigator.clipboard.writeText(sel);
@@ -293,7 +299,7 @@ function renderCollections() {
         <span class="collection-arrow">${col.expanded ? '\u25BC' : '\u25B6'}</span>
         <div class="collection-info">
           <span class="collection-name">${escHtml(col.name)}</span>
-          <span class="collection-path">${escHtml(col.path)}</span>
+          <span class="collection-path">${col.remote ? escHtml(col.remote.split(/\s+/).pop()) + ':' : ''}${escHtml(col.path)}</span>
         </div>
         <input class="collection-rename" type="text" value="${escAttr(col.name)}">
         <div class="collection-btns">
@@ -645,8 +651,8 @@ function addSession(ci, cwd = null) {
   const dir = cwd || col.path;
   const name = `Session ${col.tabs.length + 1}`;
 
-  col.tabs.push({ id: tabId, name, cwd: dir });
-  createTerminalInstance(tabId, dir, null, name, col.name);
+  col.tabs.push({ id: tabId, name, cwd: dir, remote: col.remote || null });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, false, null, 'claude', null, false, col.remote || null);
 
   col.expanded = true;
   selectTab(ci, col.tabs.length - 1);
@@ -699,8 +705,8 @@ function addTerminal(ci, cwd = null) {
   const dir = cwd || col.path;
   const name = `Terminal ${col.tabs.length + 1}`;
 
-  col.tabs.push({ id: tabId, name, cwd: dir, shell: true });
-  createTerminalInstance(tabId, dir, null, name, col.name, null, true);
+  col.tabs.push({ id: tabId, name, cwd: dir, shell: true, remote: col.remote || null });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, true, null, 'claude', null, false, col.remote || null);
 
   col.expanded = true;
   selectTab(ci, col.tabs.length - 1);
@@ -721,8 +727,8 @@ function launchCommand(ci, command) {
   const dir = col.path;
   const name = command.name;
 
-  col.tabs.push({ id: tabId, name, cwd: dir, cmd: command.cmd });
-  createTerminalInstance(tabId, dir, null, name, col.name, null, false, command.cmd);
+  col.tabs.push({ id: tabId, name, cwd: dir, cmd: command.cmd, remote: col.remote || null });
+  createTerminalInstance(tabId, dir, null, name, col.name, null, false, command.cmd, 'claude', null, false, col.remote || null);
 
   col.expanded = true;
   selectTab(ci, col.tabs.length - 1);
@@ -810,7 +816,7 @@ async function forkSession(ci, ti) {
 
   if (tab.shell || tab.cmd) { showToast('Can only fork Claude or Copilot sessions', true); return; }
 
-  const convoId = tab.conversationId || await manifold.getConversationId(tab.id);
+  const convoId = tab.conversationId || await manifold.getConversationId(tab.id) || await manifold.scanConversation(tab.cwd);
   if (!convoId) { showToast('No conversation yet — send a message first', true); return; }
   tab.conversationId = convoId;
 
@@ -1068,7 +1074,7 @@ async function saveState() {
   // Conversation IDs are cached on tab objects by the activity poll.
   // Only fetch for tabs that still lack one (e.g. freshly spawned).
   const allTabs = state.collections.flatMap(col => col.tabs);
-  const missing = allTabs.filter(t => !t.conversationId && !t.shell && !t.cmd && t.provider !== 'copilot');
+  const missing = allTabs.filter(t => !t.conversationId && !t.shell && !t.cmd && t.provider !== 'copilot' && !t.remote);
   if (missing.length > 0) {
     const results = await Promise.all(
       missing.map(tab => manifold.getConversationId(tab.id).catch(() => null))
@@ -1082,6 +1088,7 @@ async function saveState() {
     collections: state.collections.map((col) => ({
       name: col.name,
       path: col.path,
+      remote: col.remote || null,
       expanded: col.expanded,
       gridded: col.gridded || false,
       commands: col.commands || [],
@@ -1093,12 +1100,14 @@ async function saveState() {
         copilotSessionId: t.copilotSessionId || null,
         shell: t.shell || false,
         cmd: t.cmd || null,
+        remote: t.remote || null,
       })),
     })),
     activeCollection: state.activeCollectionIdx,
     activeTab: state.activeTabIdx,
     uiScale: parseInt(scaleSlider.value) || 100,
     defaultSource: state.defaultSource,
+    remotes: state.remotes,
   };
   await manifold.saveState(data);
 }
@@ -1322,7 +1331,11 @@ window.addEventListener('resize', () => {
 
 // ── Button events ──
 document.getElementById('btn-new-collection').addEventListener('click', () => {
-  addCollection(true).catch(err => console.error('addCollection failed:', err));
+  if (state.remotes.length === 0) {
+    addCollection(true).catch(err => console.error('addCollection failed:', err));
+  } else {
+    showCollectionMenu();
+  }
 });
 
 // ── Settings modal ──
@@ -1429,6 +1442,275 @@ document.getElementById('nuke-btn').addEventListener('click', async () => {
   location.reload();
 });
 
+// ── Remote destinations management ──
+
+function renderRemotes() {
+  const list = document.getElementById('remotes-list');
+  if (!list) return;
+  list.innerHTML = state.remotes.map((r, i) => `
+    <div class="remote-row" data-ri="${i}">
+      <div class="remote-row-info">
+        <span class="remote-row-name remote-editable" data-ri="${i}" data-field="name" title="Click to edit name">${escHtml(r.name)}</span>
+        <span class="remote-row-host remote-editable" data-ri="${i}" data-field="cmd" title="Click to edit command">${escHtml(r.cmd)}</span>
+        <span class="remote-row-path remote-editable" data-ri="${i}" data-field="defaultPath" title="Click to edit path">${escHtml(r.defaultPath)}</span>
+      </div>
+      <div class="remote-row-btns">
+        <button class="remote-row-btn remote-test-btn" data-ri="${i}" title="Test connection">&#x21BB;</button>
+        <button class="remote-row-btn remote-browse-btn" data-ri="${i}" title="Browse to set path">&#x25B8;</button>
+        <button class="remote-row-btn remote-row-btn-del remote-del-btn" data-ri="${i}" title="Delete">&times;</button>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.remote-test-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ri = parseInt(btn.dataset.ri);
+      const r = state.remotes[ri];
+      btn.textContent = '...';
+      const result = await manifold.sshTest({ cmd: r.cmd });
+      btn.textContent = result.ok ? '\u2713' : '\u2717';
+      btn.style.color = result.ok ? '#4e9a06' : '#e74c3c';
+      setTimeout(() => { btn.textContent = '\u21BB'; btn.style.color = ''; }, 3000);
+    });
+  });
+
+  list.querySelectorAll('.remote-editable').forEach(el => {
+    el.addEventListener('click', async () => {
+      const ri = parseInt(el.dataset.ri);
+      const field = el.dataset.field;
+      const r = state.remotes[ri];
+      if (!r) return;
+      const labels = { name: 'Remote name', cmd: 'SSH command', defaultPath: 'Default browse path' };
+      const val = await showInputDialog(labels[field], r[field]);
+      if (val) {
+        r[field] = val;
+        renderRemotes();
+        saveState();
+      }
+    });
+  });
+
+  list.querySelectorAll('.remote-browse-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ri = parseInt(btn.dataset.ri);
+      const r = state.remotes[ri];
+      settingsOverlay.classList.add('hidden');
+      showRemoteBrowser(r, true, ri);
+    });
+  });
+
+  list.querySelectorAll('.remote-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.remotes.splice(parseInt(btn.dataset.ri), 1);
+      renderRemotes();
+      saveState();
+    });
+  });
+}
+
+async function addRemote() {
+  const name = await showInputDialog('Remote name', 'e.g. GS6');
+  if (!name) return;
+  const cmd = await showInputDialog('SSH command', 'e.g. ssh gs6-term');
+  if (!cmd) return;
+  const defaultPath = await showInputDialog('Default browse path', '/home/user') || '/';
+
+  state.remotes.push({ name, cmd, defaultPath });
+  renderRemotes();
+  saveState();
+}
+
+
+document.getElementById('add-remote-btn').addEventListener('click', addRemote);
+
+// ── Collection source menu ──
+
+function showCollectionMenu() {
+  const existing = document.querySelector('.collection-source-menu');
+  if (existing) { existing.remove(); return; }
+
+  const btn = document.getElementById('btn-new-collection');
+  const rect = btn.getBoundingClientRect();
+
+  const menu = document.createElement('div');
+  menu.className = 'collection-source-menu';
+  menu.style.left = `${rect.left}px`;
+  menu.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+
+  // Local option
+  const localItem = document.createElement('button');
+  localItem.className = 'collection-menu-item';
+  localItem.innerHTML = '<span class="collection-menu-icon">&#x25B8;</span> Local folder...';
+  localItem.addEventListener('click', () => {
+    menu.remove();
+    addCollection(true);
+  });
+  menu.appendChild(localItem);
+
+  // Divider
+  if (state.remotes.length > 0) {
+    const divider = document.createElement('div');
+    divider.className = 'collection-menu-divider';
+    menu.appendChild(divider);
+  }
+
+  // Remote options
+  for (const remote of state.remotes) {
+    const item = document.createElement('button');
+    item.className = 'collection-menu-item';
+    item.innerHTML = `<span class="collection-menu-icon">&#x2192;</span> ${escHtml(remote.name)}`;
+    item.title = remote.host;
+    item.addEventListener('click', () => {
+      menu.remove();
+      showRemoteBrowser(remote);
+    });
+    menu.appendChild(item);
+  }
+
+  document.body.appendChild(menu);
+
+  setTimeout(() => {
+    const dismiss = (e) => {
+      if (!e.target.closest('.collection-source-menu')) {
+        menu.remove();
+        document.removeEventListener('mousedown', dismiss);
+      }
+    };
+    document.addEventListener('mousedown', dismiss);
+  }, 0);
+}
+
+// ── Remote folder browser ──
+
+let remoteBrowserState = {
+  remote: null,
+  currentPath: '/',
+};
+
+function showRemoteBrowser(remote, pickPathMode = false, remoteIdx = -1) {
+  remoteBrowserState.remote = remote;
+  remoteBrowserState.currentPath = remote.defaultPath || '/';
+
+  const selectBtn = document.getElementById('remote-browser-select');
+  document.getElementById('remote-browser-title').textContent = pickPathMode
+    ? `SET PATH: ${remote.name.toUpperCase()}`
+    : `BROWSE: ${remote.name.toUpperCase()}`;
+  selectBtn.textContent = pickPathMode ? 'Set Path' : 'Select';
+  document.getElementById('remote-browser-overlay').classList.remove('hidden');
+
+  navigateRemote(remoteBrowserState.currentPath);
+
+  document.getElementById('remote-browser-close').onclick = () => closeRemoteBrowser();
+  document.getElementById('remote-browser-cancel').onclick = () => closeRemoteBrowser();
+  document.getElementById('remote-browser-copy').onclick = () => {
+    navigator.clipboard.writeText(remoteBrowserState.currentPath);
+    const btn = document.getElementById('remote-browser-copy');
+    btn.textContent = '\u2713';
+    setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
+  };
+  selectBtn.onclick = () => {
+    const selectedPath = remoteBrowserState.currentPath;
+    closeRemoteBrowser();
+    if (pickPathMode && remoteIdx >= 0 && state.remotes[remoteIdx]) {
+      state.remotes[remoteIdx].defaultPath = selectedPath;
+      renderRemotes();
+      saveState();
+      settingsOverlay.classList.remove('hidden');
+    } else {
+      addRemoteCollection(remoteBrowserState.remote, selectedPath);
+    }
+  };
+  document.getElementById('remote-browser-overlay').onclick = (e) => {
+    if (e.target.id === 'remote-browser-overlay') closeRemoteBrowser();
+  };
+}
+
+function closeRemoteBrowser() {
+  document.getElementById('remote-browser-overlay').classList.add('hidden');
+}
+
+async function navigateRemote(remotePath) {
+  remoteBrowserState.currentPath = remotePath;
+
+  // Update breadcrumb
+  const breadcrumb = document.getElementById('remote-browser-breadcrumb');
+  const parts = remotePath.split('/').filter(Boolean);
+  let breadcrumbHtml = '<button class="breadcrumb-segment" data-path="/">/</button>';
+  let accumulated = '';
+  for (const part of parts) {
+    accumulated += '/' + part;
+    breadcrumbHtml += `<span class="breadcrumb-sep">/</span><button class="breadcrumb-segment" data-path="${escAttr(accumulated)}">${escHtml(part)}</button>`;
+  }
+  breadcrumb.innerHTML = breadcrumbHtml;
+
+  breadcrumb.querySelectorAll('.breadcrumb-segment').forEach(btn => {
+    btn.addEventListener('click', () => navigateRemote(btn.dataset.path));
+  });
+
+  // Update path display
+  document.getElementById('remote-browser-path').textContent = `${remoteBrowserState.remote.cmd}:${remotePath}`;
+
+  // Show loading
+  const list = document.getElementById('remote-browser-list');
+  list.innerHTML = '<div class="remote-browser-loading">Loading...</div>';
+
+  // Fetch directory listing
+  const result = await manifold.sshLs({ cmd: remoteBrowserState.remote.cmd, remotePath });
+
+  if (result.error) {
+    list.innerHTML = `<div class="remote-browser-error">${escHtml(result.error)}</div>`;
+    return;
+  }
+
+  if (result.dirs.length === 0) {
+    list.innerHTML = '<div class="remote-browser-loading">No subdirectories</div>';
+    return;
+  }
+
+  let listHtml = '';
+  if (remotePath !== '/') {
+    const parent = remotePath.split('/').slice(0, -1).join('/') || '/';
+    listHtml += `<button class="remote-dir-item" data-path="${escAttr(parent)}"><span class="remote-dir-icon">&uarr;</span><span class="remote-dir-name">..</span></button>`;
+  }
+
+  for (const dir of result.dirs) {
+    const fullPath = remotePath === '/' ? `/${dir}` : `${remotePath}/${dir}`;
+    listHtml += `<button class="remote-dir-item" data-path="${escAttr(fullPath)}"><span class="remote-dir-icon">&#x25B8;</span><span class="remote-dir-name">${escHtml(dir)}</span></button>`;
+  }
+
+  list.innerHTML = listHtml;
+
+  list.querySelectorAll('.remote-dir-item').forEach(item => {
+    item.addEventListener('click', () => navigateRemote(item.dataset.path));
+  });
+}
+
+function addRemoteCollection(remote, remotePath) {
+  const parts = remotePath.split('/');
+  const name = parts[parts.length - 1] || remote.name;
+
+  const col = {
+    name,
+    path: remotePath,
+    remote: remote.cmd,
+    expanded: true,
+    gridded: false,
+    commands: [],
+    tabs: [],
+  };
+  state.collections.push(col);
+  const ci = state.collections.length - 1;
+
+  const tabId = genTabId();
+  const tabName = 'Session 1';
+  col.tabs.push({ id: tabId, name: tabName, cwd: remotePath, remote: remote.cmd });
+  createTerminalInstance(tabId, remotePath, null, tabName, col.name, null, false, null, 'claude', null, false, remote.cmd);
+
+  selectTab(ci, 0);
+  renderCollections();
+  saveState();
+}
+
 // ── Utility ──
 function escHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1476,6 +1758,7 @@ async function restoreFromState(data) {
     const col = {
       name: colData.name || `Collection ${ci + 1}`,
       path: colData.path || homeDir || '/',
+      remote: colData.remote || null,
       expanded: colData.expanded !== false,
       gridded: colData.gridded || false,
       commands: colData.commands || [],
@@ -1492,6 +1775,7 @@ async function restoreFromState(data) {
       const provider = tabData.provider || 'claude';
       const copilotSessionId = tabData.copilotSessionId || null;
       const isNonClaude = tabData.shell || tabData.cmd;
+      const tabRemote = tabData.remote || col.remote || null;
       col.tabs.push({
         id: tabId,
         name: tabData.name || 'Session',
@@ -1501,8 +1785,9 @@ async function restoreFromState(data) {
         copilotSessionId,
         shell: tabData.shell || false,
         cmd: tabData.cmd || null,
+        remote: tabRemote,
       });
-      createTerminalInstance(tabId, cwd, isNonClaude ? null : (tabData.conversationId || null), tabData.name || 'Session', col.name, null, tabData.shell || false, tabData.cmd || null, provider, copilotSessionId, provider === 'copilot' && !!copilotSessionId);
+      createTerminalInstance(tabId, cwd, isNonClaude ? null : (tabData.conversationId || null), tabData.name || 'Session', col.name, null, tabData.shell || false, tabData.cmd || null, provider, copilotSessionId, provider === 'copilot' && !!copilotSessionId, tabRemote);
     }
 
     state.collections.push(col);
@@ -1540,6 +1825,12 @@ async function restoreFromState(data) {
     if (savedState && savedState.defaultSource) {
       state.defaultSource = savedState.defaultSource;
     }
+    // Restore remote destinations
+    if (savedState && savedState.remotes) {
+      state.remotes = savedState.remotes;
+    }
+    renderRemotes();
+
     document.getElementById('default-source-kbd').textContent = `${mod}+T`;
     renderDefaultSource();
 

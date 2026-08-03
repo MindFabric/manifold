@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('manifold', {
   destroyTerminal: (id) => ipcRenderer.send('terminal-destroy', { id }),
   isTerminalActive: (tabId) => ipcRenderer.invoke('terminal-is-active', { id: tabId }),
   getConversationId: (tabId) => ipcRenderer.invoke('terminal-get-conversation-id', { id: tabId }),
+  scanConversation: (cwd) => ipcRenderer.invoke('scan-conversation', { cwd }),
   forkConversation: (opts) => ipcRenderer.invoke('fork-conversation', opts),
   onTerminalData: (callback) => {
     ipcRenderer.on('terminal-data', (event, { id, data }) => callback(id, data));
@@ -29,6 +30,10 @@ contextBridge.exposeInMainWorld('manifold', {
 
   // Dialogs
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
+
+  // SSH remotes
+  sshLs: (opts) => ipcRenderer.invoke('ssh-ls', opts),
+  sshTest: (opts) => ipcRenderer.invoke('ssh-test', opts),
 
   // UI Scale
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),

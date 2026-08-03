@@ -827,3 +827,288 @@ body {
 #input-dialog-ok:hover {
   background: #e08867 !important;
 }
+
+/* ── Remote destinations (settings) ── */
+.settings-remotes-list {
+  margin-bottom: 4px;
+}
+.remote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  margin-bottom: 2px;
+  background: #141414;
+  border: 1px solid #222;
+  border-radius: 8px;
+}
+.remote-row-info {
+  flex: 1;
+  min-width: 0;
+}
+.remote-row-name {
+  color: #d0d0d0;
+  font-size: 12px;
+  display: block;
+}
+.remote-row-host {
+  color: #555;
+  font-size: 10px;
+  display: block;
+}
+.remote-row-btns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.remote-row-btn {
+  color: #555;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+.remote-row-btn:hover { color: #D97757; }
+.remote-row-btn-del:hover { color: #e74c3c; }
+.remote-editable {
+  cursor: pointer;
+}
+.remote-editable:hover {
+  color: #D97757;
+}
+.remote-row-path {
+  color: #D97757;
+  font-size: 10px;
+  display: block;
+}
+
+.settings-row-btn-add {
+  border-style: dashed;
+  border-color: #2a2a2a;
+}
+.settings-row-btn-add:hover {
+  border-color: #D97757;
+}
+.settings-row-btn-add .settings-label {
+  color: #D97757;
+}
+
+/* ── Collection source menu ── */
+.collection-source-menu {
+  position: fixed;
+  z-index: 100;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.collection-menu-divider {
+  height: 1px;
+  background: #333;
+  margin: 4px 0;
+}
+.collection-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  color: #ccc;
+  font-size: 12px;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+.collection-menu-item:hover {
+  background: #333;
+  color: #D97757;
+}
+.collection-menu-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+/* ── Remote folder browser ── */
+#remote-browser-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+#remote-browser {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  width: 460px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+#remote-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+#remote-browser-title {
+  color: #D97757;
+  font-weight: bold;
+  font-size: 12px;
+  letter-spacing: 2px;
+}
+#remote-browser-close {
+  color: #555;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  padding: 0 4px;
+  line-height: 1;
+  font-family: inherit;
+}
+#remote-browser-close:hover { color: #d0d0d0; }
+
+#remote-browser-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #222;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.breadcrumb-segment {
+  color: #888;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+}
+.breadcrumb-segment:hover {
+  color: #D97757;
+  background: #252525;
+}
+.breadcrumb-sep {
+  color: #444;
+  font-size: 10px;
+}
+
+#remote-browser-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  min-height: 200px;
+}
+.remote-dir-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  color: #ccc;
+  font-size: 12px;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+.remote-dir-item:hover {
+  background: #252525;
+  color: #D97757;
+}
+.remote-dir-icon {
+  color: #D97757;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.remote-dir-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.remote-browser-loading {
+  color: #555;
+  font-size: 11px;
+  padding: 20px;
+  text-align: center;
+}
+.remote-browser-error {
+  color: #e74c3c;
+  font-size: 11px;
+  padding: 20px;
+  text-align: center;
+}
+
+#remote-browser-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+#remote-browser-path {
+  color: #555;
+  font-size: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 4px;
+}
+#remote-browser-copy {
+  background: transparent;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  margin-right: 8px;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+#remote-browser-copy:hover { color: #D97757; }
+#remote-browser-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#remote-browser-btns button {
+  background: #333;
+  border: none;
+  border-radius: 4px;
+  color: #ccc;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+#remote-browser-btns button:hover { background: #444; }
+#remote-browser-select {
+  background: #D97757 !important;
+  color: #1a1a1a !important;
+}
+#remote-browser-select:hover {
+  background: #e08867 !important;
+}
