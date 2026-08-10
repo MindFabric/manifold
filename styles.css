@@ -895,6 +895,136 @@ body {
   color: #D97757;
 }
 
+/* ── Add Remote inline form ── */
+#add-remote-form {
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+.remote-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #222;
+}
+.remote-form-title {
+  color: #D97757;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.remote-form-close {
+  color: #555;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+  font-family: inherit;
+}
+.remote-form-close:hover { color: #d0d0d0; }
+.remote-form-fields { padding: 10px 12px 4px; }
+.remote-form-row { margin-bottom: 8px; }
+.remote-form-row-pair {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.remote-form-row-half {
+  flex: 1;
+  margin-bottom: 0;
+}
+.remote-form-label {
+  display: block;
+  color: #888;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.remote-form-hint {
+  color: #555;
+  font-size: 9px;
+}
+.remote-form-input {
+  width: 100%;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #d0d0d0;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+.remote-form-input:focus { border-color: #D97757; }
+.remote-form-input::placeholder { color: #444; }
+.remote-form-input[type="number"]::-webkit-inner-spin-button,
+.remote-form-input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.remote-form-input[type="number"] { -moz-appearance: textfield; }
+.remote-form-status {
+  padding: 8px 12px;
+  font-size: 11px;
+  border-top: 1px solid #222;
+}
+.remote-form-status-info { color: #D97757; }
+.remote-form-status-error { color: #e74c3c; }
+.remote-form-status-success { color: #4e9a06; }
+.remote-form-status .status-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.remote-form-status .status-step-icon {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.remote-form-status .spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #555;
+  border-top-color: #D97757;
+  border-radius: 50%;
+  animation: remote-spin 0.6s linear infinite;
+}
+@keyframes remote-spin { to { transform: rotate(360deg); } }
+.remote-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #222;
+}
+.remote-form-btn {
+  background: #333;
+  border: none;
+  border-radius: 4px;
+  color: #ccc;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.remote-form-btn:hover { background: #444; }
+.remote-form-btn-primary {
+  background: #D97757;
+  color: #1a1a1a;
+  font-weight: bold;
+}
+.remote-form-btn-primary:hover { background: #e08867; }
+.remote-form-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Collection source menu ── */
 .collection-source-menu {
   position: fixed;

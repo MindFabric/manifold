@@ -22,6 +22,8 @@ const state = {
 
 // Terminal instances: tabId -> { terminal, fitAddon, element }
 const terminalInstances = new Map();
+// Cache last non-empty selection per terminal (survives redraws from Claude Code)
+const lastSelectionCache = new Map();
 let tabIdCounter = 0;
 
 // ── DOM refs ──
@@ -107,31 +109,36 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
 
-  // Let xterm handle only terminal keys — app shortcuts go through handleAppShortcut
+  // Ctrl+C/V are handled by Electron's Edit menu (role: copy/paste).
+  // The paste role works by pasting into xterm's hidden textarea — xterm detects
+  // it and forwards to the PTY with bracketed paste support automatically.
+  // Ctrl+Shift+C/V/A are handled by handleAppShortcut (document capture phase).
+  // This handler only defers non-clipboard app shortcuts.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
-    const ctrl = e.ctrlKey || e.metaKey;
-    // Clipboard — Ctrl+C copies when text is selected, otherwise sends SIGINT
-    if (ctrl && e.key === 'c' && !e.shiftKey && term.hasSelection()) {
-      navigator.clipboard.writeText(term.getSelection());
-      term.clearSelection();
-      return false;
-    }
-    if (ctrl && e.shiftKey && e.key === 'C') {
-      const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel);
-      return false;
-    }
-    if (ctrl && e.shiftKey && e.key === 'V') {
-      e.preventDefault();
-      navigator.clipboard.readText().then(text => {
-        if (text) manifold.sendInput(tabId, text);
-      });
-      return false;
-    }
-    // Defer to central shortcut handler
     if (handleAppShortcut(e)) return false;
     return true;
+  });
+
+  // Cache selection so it survives redraws (Claude Code clears selections on redraw).
+  // TUI apps (especially over SSH) redraw frequently, clearing xterm selections.
+  // We cache on every selection change AND on mouseup to catch the final selection
+  // before the next redraw wipes it.
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel) lastSelectionCache.set(tabId, sel);
+  });
+  el.addEventListener('mouseup', () => {
+    setTimeout(() => {
+      const sel = term.getSelection();
+      if (sel) lastSelectionCache.set(tabId, sel);
+    }, 5);
+  }, true);
+
+  // Right-click context menu on terminal for copy/paste
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showTerminalContextMenu(e.clientX, e.clientY, term, tabId);
   });
 
   // Open terminal (double RAF to let DOM fully settle before measuring)
@@ -200,6 +207,7 @@ function destroyTerminalInstance(tabId) {
     if (inst.element.parentNode) inst.element.parentNode.removeChild(inst.element);
     try { inst.terminal.dispose(); } catch (_) {}
     terminalInstances.delete(tabId);
+    lastSelectionCache.delete(tabId);
   }
 }
 
@@ -274,6 +282,15 @@ manifold.onConversationDetected((tabId, conversationId) => {
   }
 });
 
+// Respond to size requests from main process (e.g. after SSH reconnect)
+manifold.onTerminalRequestSize((id) => {
+  const inst = terminalInstances.get(id);
+  if (inst) {
+    const { cols, rows } = inst.terminal;
+    manifold.resizeTerminal(id, cols, rows);
+  }
+});
+
 manifold.onTerminalData((id, data) => {
   const inst = terminalInstances.get(id);
   if (!inst) return;
@@ -287,6 +304,15 @@ manifold.onTerminalData((id, data) => {
     buf.push(data);
   }
 });
+
+// Helper: get the active terminal instance
+function getActiveTerminal() {
+  const tab = getActiveTab();
+  if (!tab) return null;
+  const inst = terminalInstances.get(tab.id);
+  if (!inst) return null;
+  return { term: inst.terminal, tabId: tab.id };
+}
 
 // ── Collection rendering ──
 function renderCollections() {
@@ -1146,9 +1172,55 @@ function handleAppShortcut(e) {
       if (state.collections[ci]) addTerminal(ci);
       return true;
     }
+    // Ctrl+Shift+C — copy selected text from terminal.
+    // Checks xterm selection, cached selection, and browser-native selection.
+    if (e.code === 'KeyC') {
+      const active = getActiveTerminal();
+      if (active) {
+        const sel = active.term.getSelection()
+          || lastSelectionCache.get(active.tabId)
+          || window.getSelection().toString().trim()
+          || '';
+        if (sel) {
+          manifold.clipboardWriteText(sel).then(() => {
+            active.term.clearSelection();
+            lastSelectionCache.delete(active.tabId);
+            showToast('Copied');
+          }).catch(err => showToast('Copy failed: ' + err.message, true));
+        } else {
+          showToast('No text selected — Shift+drag to select', true);
+        }
+      }
+      return true;
+    }
+    // Ctrl+Shift+V — paste into terminal
+    if (e.code === 'KeyV') {
+      const active = getActiveTerminal();
+      if (active) {
+        manifold.clipboardReadText().then(text => {
+          if (text) {
+            if (active.term.modes.bracketedPasteMode) {
+              manifold.sendInput(active.tabId, '\x1b[200~' + text + '\x1b[201~');
+            } else {
+              manifold.sendInput(active.tabId, text);
+            }
+          }
+        });
+      }
+      return true;
+    }
+    // Ctrl+Shift+A — select all terminal content
+    if (e.code === 'KeyA') {
+      const active = getActiveTerminal();
+      if (active) {
+        active.term.selectAll();
+        showToast('Selected all');
+      }
+      return true;
+    }
   }
 
-  // Ctrl combos (no shift)
+  // Ctrl combos (no shift) — NO clipboard here, handled by xterm's key handler
   if (ctrl && !e.shiftKey) {
     if (e.key === 't') {
       const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
@@ -1279,6 +1351,112 @@ function dismissContextMenuOnEsc(e) {
   if (e.key === 'Escape') dismissContextMenu();
 }
 
+// ── Terminal right-click context menu (copy/paste) ──
+
+// Read visible terminal buffer content directly (bypasses selection entirely)
+function getVisibleTerminalText(term) {
+  const buf = term.buffer.active;
+  const lines = [];
+  for (let i = 0; i < term.rows; i++) {
+    const line = buf.getLine(buf.viewportY + i);
+    if (line) lines.push(line.translateToString(true));
+  }
+  // Trim trailing empty lines
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.join('\n');
+}
+
+function showTerminalContextMenu(x, y, term, tabId) {
+  dismissContextMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  const sel = term.getSelection() || lastSelectionCache.get(tabId) || window.getSelection().toString().trim() || '';
+
+  const items = [
+    {
+      label: 'Copy',
+      hint: 'Ctrl+Shift+C',
+      disabled: !sel,
+      action: () => {
+        if (sel) {
+          manifold.clipboardWriteText(sel).then(() => {
+            term.clearSelection();
+            lastSelectionCache.delete(tabId);
+            showToast('Copied');
+          });
+        }
+      },
+    },
+    {
+      label: 'Copy all visible',
+      hint: '',
+      disabled: false,
+      action: () => {
+        const text = getVisibleTerminalText(term);
+        if (text) {
+          manifold.clipboardWriteText(text).then(() => {
+            showToast(`Copied ${text.length} chars`);
+          });
+        }
+      },
+    },
+    {
+      label: 'Select all',
+      hint: 'Ctrl+Shift+A',
+      disabled: false,
+      action: () => {
+        term.selectAll();
+        term.focus();
+      },
+    },
+    {
+      label: 'Paste',
+      hint: 'Ctrl+V',
+      disabled: false,
+      action: () => {
+        manifold.clipboardReadText().then(text => {
+          if (text) {
+            if (term.modes.bracketedPasteMode) {
+              manifold.sendInput(tabId, '\x1b[200~' + text + '\x1b[201~');
+            } else {
+              manifold.sendInput(tabId, text);
+            }
+          }
+          term.focus();
+        });
+      },
+    },
+  ];
+
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'ctx-menu-item';
+    if (item.disabled) row.style.opacity = '0.4';
+    row.innerHTML = `<span>${item.label}</span><span class="ctx-menu-hint">${item.hint}</span>`;
+    if (!item.disabled) {
+      row.addEventListener('click', () => { dismissContextMenu(); item.action(); });
+    }
+    menu.appendChild(row);
+  }
+
+  document.body.appendChild(menu);
+
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+  });
+
+  setTimeout(() => {
+    document.addEventListener('mousedown', dismissContextMenuOutside);
+    document.addEventListener('keydown', dismissContextMenuOnEsc);
+  }, 0);
+}
+
 // ── Activity polling ──
 setInterval(async () => {
   const tabIds = [...terminalInstances.keys()];
@@ -1366,8 +1544,11 @@ function populateShortcuts(isMac) {
     ['Alt+1-9', 'Switch to tab N'],
     ['Alt+\u2191/\u2193', 'Jump between collections'],
     ['Alt+\u2190/\u2192', 'Cycle sessions'],
-    ['Ctrl+Shift+C', 'Copy from terminal'],
-    ['Ctrl+Shift+V', 'Paste into terminal'],
+    ['Ctrl+C', 'Copy selection (or cached)'],
+    ['Ctrl+Shift+C', 'Copy (cached fallback)'],
+    ['Ctrl+Shift+A', 'Select all terminal content'],
+    ['Ctrl+V / Ctrl+Shift+V', 'Paste into terminal'],
+    ['Right-click', 'Copy / Paste / Select All'],
     ['Esc', 'Close settings'],
   ];
   const table = document.getElementById('shortcuts-table');
@@ -1447,11 +1628,15 @@ document.getElementById('nuke-btn').addEventListener('click', async () => {
 function renderRemotes() {
   const list = document.getElementById('remotes-list');
   if (!list) return;
-  list.innerHTML = state.remotes.map((r, i) => `
+  list.innerHTML = state.remotes.map((r, i) => {
+    const hostDisplay = r.host
+      ? `${r.username || ''}@${r.host}${r.port && r.port !== 22 ? ':' + r.port : ''}`
+      : r.cmd;
+    return `
     <div class="remote-row" data-ri="${i}">
       <div class="remote-row-info">
         <span class="remote-row-name remote-editable" data-ri="${i}" data-field="name" title="Click to edit name">${escHtml(r.name)}</span>
-        <span class="remote-row-host remote-editable" data-ri="${i}" data-field="cmd" title="Click to edit command">${escHtml(r.cmd)}</span>
+        <span class="remote-row-host remote-editable" data-ri="${i}" data-field="cmd" title="Click to edit SSH command">${escHtml(hostDisplay)}</span>
         <span class="remote-row-path remote-editable" data-ri="${i}" data-field="defaultPath" title="Click to edit path">${escHtml(r.defaultPath)}</span>
       </div>
       <div class="remote-row-btns">
@@ -1459,8 +1644,8 @@ function renderRemotes() {
         <button class="remote-row-btn remote-browse-btn" data-ri="${i}" title="Browse to set path">&#x25B8;</button>
         <button class="remote-row-btn remote-row-btn-del remote-del-btn" data-ri="${i}" title="Delete">&times;</button>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   list.querySelectorAll('.remote-test-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1484,6 +1669,12 @@ function renderRemotes() {
       const val = await showInputDialog(labels[field], r[field]);
       if (val) {
         r[field] = val;
+        // If user manually edits cmd, clear structured fields
+        if (field === 'cmd' && r.host) {
+          delete r.host;
+          delete r.port;
+          delete r.username;
+        }
         renderRemotes();
         saveState();
       }
@@ -1508,20 +1699,122 @@ function renderRemotes() {
   });
 }
 
-async function addRemote() {
-  const name = await showInputDialog('Remote name', 'e.g. GS6');
-  if (!name) return;
-  const cmd = await showInputDialog('SSH command', 'e.g. ssh gs6-term');
-  if (!cmd) return;
-  const defaultPath = await showInputDialog('Default browse path', '/home/user') || '/';
+// ── Add Remote inline form ──
 
-  state.remotes.push({ name, cmd, defaultPath });
-  renderRemotes();
-  saveState();
+function buildSshCmd(host, port, username) {
+  const portPart = port && port !== 22 ? `-p ${port} ` : '';
+  return `ssh ${portPart}${username}@${host}`;
 }
 
+function showAddRemoteForm() {
+  const form = document.getElementById('add-remote-form');
+  document.getElementById('add-remote-btn').classList.add('hidden');
+  form.classList.remove('hidden');
 
-document.getElementById('add-remote-btn').addEventListener('click', addRemote);
+  document.getElementById('remote-form-name').value = '';
+  document.getElementById('remote-form-host').value = '';
+  document.getElementById('remote-form-port').value = '22';
+  document.getElementById('remote-form-username').value = '';
+  document.getElementById('remote-form-password').value = '';
+  document.getElementById('remote-form-password-row').classList.add('hidden');
+
+  const status = document.getElementById('remote-form-status');
+  status.classList.add('hidden');
+  status.innerHTML = '';
+
+  const submit = document.getElementById('remote-form-submit');
+  submit.disabled = false;
+  submit.textContent = 'Connect & Add';
+
+  document.getElementById('remote-form-name').focus();
+}
+
+function hideAddRemoteForm() {
+  document.getElementById('add-remote-form').classList.add('hidden');
+  document.getElementById('add-remote-btn').classList.remove('hidden');
+}
+
+function showFormSpinner(message) {
+  const status = document.getElementById('remote-form-status');
+  status.classList.remove('hidden');
+  status.innerHTML = `<div class="status-step"><span class="status-step-icon"><span class="spinner"></span></span> <span class="remote-form-status-info">${escHtml(message)}</span></div>`;
+}
+
+function showFormStatus(message, type = 'info') {
+  const status = document.getElementById('remote-form-status');
+  status.classList.remove('hidden');
+  const cls = type === 'error' ? 'remote-form-status-error'
+    : type === 'success' ? 'remote-form-status-success'
+    : 'remote-form-status-info';
+  status.innerHTML = `<div class="${cls}">${escHtml(message)}</div>`;
+}
+
+async function submitAddRemoteForm() {
+  const nameEl = document.getElementById('remote-form-name');
+  const hostEl = document.getElementById('remote-form-host');
+  const portEl = document.getElementById('remote-form-port');
+  const usernameEl = document.getElementById('remote-form-username');
+  const passwordEl = document.getElementById('remote-form-password');
+  const submitBtn = document.getElementById('remote-form-submit');
+
+  const name = nameEl.value.trim();
+  const host = hostEl.value.trim();
+  const port = parseInt(portEl.value) || 22;
+  const username = usernameEl.value.trim();
+  const password = passwordEl.value;
+
+  if (!name) { nameEl.focus(); showFormStatus('Name is required', 'error'); return; }
+  if (!host) { hostEl.focus(); showFormStatus('Host is required', 'error'); return; }
+  if (!username) { usernameEl.focus(); showFormStatus('Username is required', 'error'); return; }
+  if (port < 1 || port > 65535) { portEl.focus(); showFormStatus('Port must be 1-65535', 'error'); return; }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Setting up...';
+  showFormSpinner('Checking SSH key and testing connection...');
+
+  try {
+    const result = await manifold.sshSetup({ host, port, username, password: password || null });
+
+    if (result.ok) {
+      const cmd = result.cmd || buildSshCmd(host, port, username);
+      state.remotes.push({ name, cmd, host, port, username, defaultPath: '/' });
+      renderRemotes();
+      saveState();
+      hideAddRemoteForm();
+      showToast(`Remote "${name}" added`);
+      return;
+    }
+
+    if (result.needsPassword) {
+      document.getElementById('remote-form-password-row').classList.remove('hidden');
+      passwordEl.focus();
+      showFormStatus('Key auth failed — enter password to copy your SSH key to the server.', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Copy Key & Add';
+      return;
+    }
+
+    showFormStatus(result.error || 'Setup failed', 'error');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Retry';
+  } catch (err) {
+    showFormStatus(`Error: ${err.message}`, 'error');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Retry';
+  }
+}
+
+document.getElementById('add-remote-btn').addEventListener('click', showAddRemoteForm);
+document.getElementById('add-remote-form-close').addEventListener('click', hideAddRemoteForm);
+document.getElementById('remote-form-cancel').addEventListener('click', hideAddRemoteForm);
+document.getElementById('remote-form-submit').addEventListener('click', submitAddRemoteForm);
+
+['remote-form-name', 'remote-form-host', 'remote-form-port', 'remote-form-username', 'remote-form-password'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitAddRemoteForm(); }
+    if (e.key === 'Escape') { hideAddRemoteForm(); }
+  });
+});
 
 // ── Collection source menu ──
 
@@ -1559,13 +1852,28 @@ function showCollectionMenu() {
     const item = document.createElement('button');
     item.className = 'collection-menu-item';
     item.innerHTML = `<span class="collection-menu-icon">&#x2192;</span> ${escHtml(remote.name)}`;
-    item.title = remote.host;
+    item.title = remote.host || remote.cmd;
     item.addEventListener('click', () => {
       menu.remove();
       showRemoteBrowser(remote);
     });
     menu.appendChild(item);
   }
+
+  // "New Remote..." option
+  const divider2 = document.createElement('div');
+  divider2.className = 'collection-menu-divider';
+  menu.appendChild(divider2);
+
+  const newRemoteItem = document.createElement('button');
+  newRemoteItem.className = 'collection-menu-item';
+  newRemoteItem.innerHTML = '<span class="collection-menu-icon">+</span> New Remote...';
+  newRemoteItem.addEventListener('click', () => {
+    menu.remove();
+    settingsOverlay.classList.remove('hidden');
+    setTimeout(() => showAddRemoteForm(), 100);
+  });
+  menu.appendChild(newRemoteItem);
 
   document.body.appendChild(menu);
 

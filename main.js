@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, screen, nativeImage, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -88,6 +88,141 @@ function destroyAllTerminals() {
 ipcMain.handle('get-home-dir', () => os.homedir());
 ipcMain.handle('get-platform', () => process.platform);
 
+// Clipboard — must go through main process because sandboxed preload scripts
+// don't have access to Electron's clipboard module on Windows.
+ipcMain.handle('clipboard-read', () => clipboard.readText());
+ipcMain.handle('clipboard-write', (_, text) => { clipboard.writeText(text); });
+
+// ── SSH helpers ──
+
+function sendTerminalMsg(id, msg) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('terminal-data', { id, data: `\r\n\x1b[33m[SSH] ${msg}\x1b[0m\r\n` });
+  }
+}
+
+function buildRemoteCmd(sshParams) {
+  const { remotePath, shellOnly, customCmd, conversationId } = sshParams;
+  if (shellOnly) return `cd "${remotePath}"`;
+  if (customCmd) return `cd "${remotePath}" && ${customCmd}`;
+  const toolArgs = conversationId ? `${getToolCmd()} --resume ${conversationId}` : getToolCmd();
+  return `cd "${remotePath}" && ${toolArgs}`;
+}
+
+function spawnSshPty(id, sshParams) {
+  const { remote, cleanEnv } = sshParams;
+  const parts = remote.trim().split(/\s+/);
+  const sshBin = parts[0];
+  const sshTargetArgs = parts.slice(1);
+  const remoteCmd = buildRemoteCmd(sshParams);
+
+  // Add ServerAliveInterval to detect dead connections faster
+  const sshOpts = ['-t', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3'];
+
+  const ptyProcess = IS_WIN
+    ? pty.spawn('wsl.exe', [sshBin, ...sshOpts, ...sshTargetArgs], {
+        name: 'xterm-256color', cols: 120, rows: 30, env: cleanEnv,
+      })
+    : pty.spawn(sshBin, [...sshOpts, ...sshTargetArgs], {
+        name: 'xterm-256color', cols: 120, rows: 30, env: cleanEnv,
+      });
+
+  // After SSH connects, send the cd + command
+  let sshReady = false;
+  let sshDataCount = 0;
+  const onSshData = (data) => {
+    sshDataCount += data.length;
+    if (!sshReady && sshDataCount > 20) {
+      sshReady = true;
+      ptyProcess.removeListener('data', onSshData);
+      setTimeout(() => {
+        try { ptyProcess.write(remoteCmd + '\r'); } catch (_) {}
+      }, 300);
+    }
+  };
+  ptyProcess.on('data', onSshData);
+
+  return ptyProcess;
+}
+
+function wireUpSshPty(id, ptyProcess, sshParams) {
+  const term = terminals.get(id);
+  if (!term) return;
+
+  // Clean up old flush interval
+  if (term.flushInterval) clearInterval(term.flushInterval);
+
+  // Set up data batching for this pty
+  let chunks = [];
+  let chunkBytes = 0;
+
+  ptyProcess.onData((data) => {
+    chunks.push(data);
+    chunkBytes += data.length;
+  });
+
+  const flushInterval = setInterval(() => {
+    if (chunkBytes > 0 && mainWindow && !mainWindow.isDestroyed()) {
+      const batch = chunks.length === 1 ? chunks[0] : chunks.join('');
+      chunks = [];
+      chunkBytes = 0;
+      mainWindow.webContents.send('terminal-data', { id, data: batch });
+    }
+  }, 16);
+
+  // Handle exit — attempt reconnection
+  ptyProcess.onExit(() => {
+    const t = terminals.get(id);
+    if (!t || t.sshDead) return; // already handling reconnect or terminal was destroyed
+    t.alive = false;
+    if (t.flushInterval) clearInterval(t.flushInterval);
+    attemptSshReconnect(id, sshParams, 0);
+  });
+
+  // Update terminal entry
+  term.pty = ptyProcess;
+  term.alive = true;
+  term.flushInterval = flushInterval;
+  term.sshDead = false;
+
+  // Sync size: get current terminal size from renderer
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('terminal-request-size', { id });
+  }
+}
+
+const SSH_RECONNECT_DELAYS = [3, 6, 15]; // seconds between attempts
+const SSH_MAX_ATTEMPTS = SSH_RECONNECT_DELAYS.length;
+
+function attemptSshReconnect(id, sshParams, attempt) {
+  const term = terminals.get(id);
+  if (!term) return;
+
+  if (attempt >= SSH_MAX_ATTEMPTS) {
+    term.sshDead = true;
+    sendTerminalMsg(id, 'Connection lost. Max reconnection attempts reached. Close and reopen the tab to retry.');
+    return;
+  }
+
+  const delay = SSH_RECONNECT_DELAYS[attempt];
+  sendTerminalMsg(id, `Connection lost. Reconnecting in ${delay}s... (attempt ${attempt + 1}/${SSH_MAX_ATTEMPTS})`);
+
+  term.sshReconnectTimer = setTimeout(() => {
+    const t = terminals.get(id);
+    if (!t) return; // terminal was destroyed while waiting
+
+    sendTerminalMsg(id, 'Reconnecting...');
+    try {
+      const newPty = spawnSshPty(id, sshParams);
+      wireUpSshPty(id, newPty, sshParams);
+      sendTerminalMsg(id, 'Reconnected.');
+    } catch (err) {
+      sendTerminalMsg(id, `Reconnection failed: ${err.message}`);
+      attemptSshReconnect(id, sshParams, attempt + 1);
+    }
+  }, delay * 1000);
+}
+
 // ── Terminal management ──
 
 ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, collectionName, prompt, shell: shellOnly, cmd: customCmd, provider, sessionId, resume, remote }) => {
@@ -104,57 +239,9 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   if (remote) {
     // Remote SSH session — parse user's SSH command, spawn directly
     const remotePath = cwd || '/';
-    const parts = remote.trim().split(/\s+/);
-    const sshBin = parts[0]; // "ssh"
-    const sshTargetArgs = parts.slice(1); // ["gs6-term"]
+    const sshParams = { remote, remotePath, shellOnly, customCmd, conversationId, cleanEnv };
 
-    // Build the command to type after SSH connects
-    let remoteCmd;
-    if (shellOnly) {
-      remoteCmd = `cd "${remotePath}"`;
-    } else if (customCmd) {
-      remoteCmd = `cd "${remotePath}" && ${customCmd}`;
-    } else {
-      let toolArgs;
-      if (conversationId) {
-        toolArgs = `${getToolCmd()} --resume ${conversationId}`;
-      } else {
-        toolArgs = getToolCmd();
-      }
-      remoteCmd = `cd "${remotePath}" && ${toolArgs}`;
-    }
-
-    // Spawn SSH directly with user's exact args
-    if (IS_WIN) {
-      ptyProcess = pty.spawn('wsl.exe', [sshBin, '-t', ...sshTargetArgs], {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
-        env: cleanEnv,
-      });
-    } else {
-      ptyProcess = pty.spawn(sshBin, ['-t', ...sshTargetArgs], {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
-        env: cleanEnv,
-      });
-    }
-
-    // After SSH connects, send the cd + command
-    let sshReady = false;
-    let sshDataCount = 0;
-    const onSshData = (data) => {
-      sshDataCount += data.length;
-      if (!sshReady && sshDataCount > 20) {
-        sshReady = true;
-        ptyProcess.removeListener('data', onSshData);
-        setTimeout(() => {
-          ptyProcess.write(remoteCmd + '\r');
-        }, 300);
-      }
-    };
-    ptyProcess.on('data', onSshData);
+    ptyProcess = spawnSshPty(id, sshParams);
     initialPrompt = null;
   } else if (provider === 'copilot') {
     const copilotCmd = resume
@@ -257,8 +344,29 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
     }
   }
 
-  // ── Data batching: accumulate PTY output, flush every 16ms ──
-  // Use array + join instead of string concat to avoid O(n²) allocation
+  // ── Data batching & exit handling ──
+  let flushInterval;
+
+  if (remote) {
+    // SSH terminals: register in map first, then wire up (enables reconnection)
+    const sshParams = { remote, remotePath: cwd || '/', shellOnly, customCmd, conversationId, cleanEnv };
+    terminals.set(id, {
+      pty: ptyProcess,
+      alive: true,
+      conversationId: conversationId || null,
+      spawnTime: Date.now(),
+      projectDir: null,
+      convoCheck: null,
+      flushInterval: null,
+      sshParams,
+      sshDead: false,
+      sshReconnectTimer: null,
+    });
+    wireUpSshPty(id, ptyProcess, sshParams);
+    return { id };
+  }
+
+  // Non-SSH terminals: accumulate PTY output, flush every 16ms
   let chunks = [];
   let chunkBytes = 0;
 
@@ -267,7 +375,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
     chunkBytes += data.length;
   });
 
-  const flushInterval = setInterval(() => {
+  flushInterval = setInterval(() => {
     if (chunkBytes > 0 && mainWindow && !mainWindow.isDestroyed()) {
       const batch = chunks.length === 1 ? chunks[0] : chunks.join('');
       chunks = [];
@@ -285,7 +393,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
   });
 
   // Conversation ID detection — find the most recently modified .jsonl after spawn
-  const isNonClaude = shellOnly || customCmd || provider === 'copilot' || !!remote;
+  const isNonClaude = shellOnly || customCmd || provider === 'copilot';
   const projectDir = isNonClaude ? null : getProjectDir(dir);
   const spawnTime = Date.now();
   let detectedConvoId = conversationId || null;
@@ -355,7 +463,7 @@ ipcMain.handle('terminal-create', (event, { id, cwd, conversationId, name, colle
 ipcMain.on('terminal-input', (event, { id, data }) => {
   const term = terminals.get(id);
   if (term && term.alive) {
-    term.pty.write(data);
+    try { term.pty.write(data); } catch (_) {}
   }
 });
 
@@ -369,6 +477,8 @@ ipcMain.on('terminal-resize', (event, { id, cols, rows }) => {
 ipcMain.on('terminal-destroy', (event, { id }) => {
   const term = terminals.get(id);
   if (term) {
+    if (term.sshReconnectTimer) clearTimeout(term.sshReconnectTimer);
+    term.sshDead = true; // prevent reconnection attempts
     if (term.convoCheck) clearInterval(term.convoCheck);
     if (term.flushInterval) clearInterval(term.flushInterval);
     try { term.pty.kill(); } catch (_) {}
@@ -379,6 +489,29 @@ ipcMain.on('terminal-destroy', (event, { id }) => {
 ipcMain.handle('terminal-is-active', (event, { id }) => {
   const term = terminals.get(id);
   return !!(term && term.alive);
+});
+
+// Manual SSH reconnection (e.g. after max attempts exhausted)
+ipcMain.handle('terminal-reconnect', (event, { id }) => {
+  const term = terminals.get(id);
+  if (!term || !term.sshParams) return { ok: false, error: 'Not an SSH terminal' };
+  if (term.alive) return { ok: false, error: 'Terminal is still alive' };
+
+  // Cancel any pending reconnect timer
+  if (term.sshReconnectTimer) clearTimeout(term.sshReconnectTimer);
+  term.sshDead = false;
+
+  sendTerminalMsg(id, 'Reconnecting...');
+  try {
+    const newPty = spawnSshPty(id, term.sshParams);
+    wireUpSshPty(id, newPty, term.sshParams);
+    sendTerminalMsg(id, 'Reconnected.');
+    return { ok: true };
+  } catch (err) {
+    sendTerminalMsg(id, `Reconnection failed: ${err.message}`);
+    term.sshDead = true;
+    return { ok: false, error: err.message };
+  }
 });
 
 // Get the detected conversation ID for a terminal
@@ -585,9 +718,141 @@ ipcMain.handle('ssh-test', async (event, { cmd }) => {
   });
 });
 
+// ── SSH setup (key generation + key copy) ──
+
+function runCmd(bin, args, opts = {}) {
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    const proc = IS_WIN
+      ? spawn('wsl.exe', [bin, ...args], opts)
+      : spawn(bin, args, opts);
+
+    let stdout = '', stderr = '';
+    if (proc.stdout) proc.stdout.on('data', d => { stdout += d; });
+    if (proc.stderr) proc.stderr.on('data', d => { stderr += d; });
+
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch (_) {}
+      resolve({ ok: false, stdout, stderr: 'Timeout' });
+    }, opts.timeout || 15000);
+
+    proc.on('close', code => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, stdout, stderr: err.message });
+    });
+  });
+}
+
+function sshCopyIdWithPassword(host, port, username, password) {
+  return new Promise((resolve) => {
+    const args = ['-o', 'StrictHostKeyChecking=accept-new'];
+    if (port && port !== 22) args.push('-p', String(port));
+    args.push(`${username}@${host}`);
+
+    const proc = IS_WIN
+      ? pty.spawn('wsl.exe', ['ssh-copy-id', ...args], { name: 'xterm-256color', cols: 80, rows: 10 })
+      : pty.spawn('ssh-copy-id', args, { name: 'xterm-256color', cols: 80, rows: 10 });
+
+    let output = '';
+    let passwordSent = false;
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch (_) {}
+      resolve({ ok: false, error: 'Timeout — could not reach host' });
+    }, 20000);
+
+    proc.onData((data) => {
+      output += data;
+      if (!passwordSent && /password/i.test(output)) {
+        passwordSent = true;
+        proc.write(password + '\r');
+      }
+    });
+
+    proc.onExit(({ exitCode }) => {
+      clearTimeout(timer);
+      if (exitCode === 0) {
+        resolve({ ok: true });
+      } else {
+        const err = output.includes('Permission denied') ? 'Wrong password'
+          : output.includes('Connection refused') ? 'Connection refused'
+          : output.includes('No route to host') ? 'No route to host'
+          : output.trim().split('\n').pop() || 'ssh-copy-id failed';
+        resolve({ ok: false, error: err });
+      }
+    });
+  });
+}
+
+ipcMain.handle('ssh-setup', async (event, { host, port, username, password }) => {
+  const home = os.homedir();
+  const target = `${username}@${host}`;
+  const portArg = port && port !== 22 ? `-p ${port} ` : '';
+  const cmd = `ssh ${portArg}${target}`.trim();
+  const portArgs = port && port !== 22 ? ['-p', String(port)] : [];
+
+  // Step 1: Check for local SSH key
+  const keyCheck = await runCmd('bash', ['-c',
+    'test -f ~/.ssh/id_ed25519 && echo "ed25519" || (test -f ~/.ssh/id_rsa && echo "rsa" || echo "none")'
+  ]);
+  const keyType = keyCheck.stdout || 'none';
+
+  // Step 2: Generate key if missing
+  if (keyType === 'none') {
+    const gen = await runCmd('bash', ['-c',
+      'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q <<< y 2>/dev/null; test -f ~/.ssh/id_ed25519 && echo "ok" || echo "fail"'
+    ]);
+    if (!gen.stdout.includes('ok')) {
+      return { ok: false, error: 'Failed to generate SSH key', cmd };
+    }
+  }
+
+  // Step 3: Test key-based auth
+  const authTest = await runCmd('ssh', [
+    ...portArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    target, 'echo', 'ok'
+  ]);
+
+  if (authTest.ok && authTest.stdout === 'ok') {
+    return { ok: true, keyAuthWorked: true, cmd };
+  }
+
+  // Step 4: Key auth failed — need password
+  if (!password) {
+    return { ok: false, needsPassword: true, error: 'Key auth failed — enter password to copy your SSH key.', cmd };
+  }
+
+  // Step 5: Copy key using pty-based ssh-copy-id
+  const copyResult = await sshCopyIdWithPassword(host, port, username, password);
+  if (!copyResult.ok) {
+    return { ok: false, error: copyResult.error, cmd };
+  }
+
+  // Step 6: Verify key auth now works
+  const verify = await runCmd('ssh', [
+    ...portArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    target, 'echo', 'ok'
+  ]);
+
+  if (verify.ok && verify.stdout === 'ok') {
+    return { ok: true, cmd };
+  }
+
+  return { ok: false, error: 'Key was copied but auth verification failed', cmd };
+});
+
 // ── App lifecycle ──
 
 app.whenReady().then(() => {
+  // Edit menu with standard roles — on macOS these bind Cmd+C/V, on Windows/Linux
+  // Ctrl+C/V. The paste role works by pasting into xterm's hidden textarea, which
+  // xterm detects and forwards to the PTY (including bracketed paste support).
+  // Copy from terminal uses Ctrl+Shift+C (handled in renderer's handleAppShortcut).
   const editMenu = {
     label: 'Edit',
     submenu: [

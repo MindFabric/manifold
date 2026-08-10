@@ -91,6 +91,41 @@
                 </div>
                 <span class="settings-row-arrow">&rsaquo;</span>
               </button>
+              <div id="add-remote-form" class="hidden">
+                <div class="remote-form-header">
+                  <span class="remote-form-title">NEW REMOTE</span>
+                  <button id="add-remote-form-close" class="remote-form-close">&times;</button>
+                </div>
+                <div class="remote-form-fields">
+                  <div class="remote-form-row">
+                    <label class="remote-form-label">Name</label>
+                    <input id="remote-form-name" type="text" class="remote-form-input" placeholder="e.g. My Server" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="remote-form-row">
+                    <label class="remote-form-label">Host / IP</label>
+                    <input id="remote-form-host" type="text" class="remote-form-input" placeholder="e.g. 192.168.1.100 or myserver.com" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="remote-form-row-pair">
+                    <div class="remote-form-row remote-form-row-half">
+                      <label class="remote-form-label">Username</label>
+                      <input id="remote-form-username" type="text" class="remote-form-input" placeholder="e.g. user" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="remote-form-row remote-form-row-half">
+                      <label class="remote-form-label">Port</label>
+                      <input id="remote-form-port" type="number" class="remote-form-input" value="22" min="1" max="65535">
+                    </div>
+                  </div>
+                  <div id="remote-form-password-row" class="remote-form-row hidden">
+                    <label class="remote-form-label">Password <span class="remote-form-hint">(one-time, for key setup only)</span></label>
+                    <input id="remote-form-password" type="password" class="remote-form-input" placeholder="Not stored — used once to copy SSH key" autocomplete="off">
+                  </div>
+                </div>
+                <div id="remote-form-status" class="remote-form-status hidden"></div>
+                <div class="remote-form-actions">
+                  <button id="remote-form-cancel" class="remote-form-btn">Cancel</button>
+                  <button id="remote-form-submit" class="remote-form-btn remote-form-btn-primary">Connect & Add</button>
+                </div>
+              </div>
             </div>
             <div class="settings-section">
               <div class="settings-section-title">KEYBOARD SHORTCUTS</div>

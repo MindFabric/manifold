@@ -11,11 +11,15 @@ contextBridge.exposeInMainWorld('manifold', {
   resizeTerminal: (id, cols, rows) => ipcRenderer.send('terminal-resize', { id, cols, rows }),
   destroyTerminal: (id) => ipcRenderer.send('terminal-destroy', { id }),
   isTerminalActive: (tabId) => ipcRenderer.invoke('terminal-is-active', { id: tabId }),
+  reconnectTerminal: (tabId) => ipcRenderer.invoke('terminal-reconnect', { id: tabId }),
   getConversationId: (tabId) => ipcRenderer.invoke('terminal-get-conversation-id', { id: tabId }),
   scanConversation: (cwd) => ipcRenderer.invoke('scan-conversation', { cwd }),
   forkConversation: (opts) => ipcRenderer.invoke('fork-conversation', opts),
   onTerminalData: (callback) => {
     ipcRenderer.on('terminal-data', (event, { id, data }) => callback(id, data));
+  },
+  onTerminalRequestSize: (callback) => {
+    ipcRenderer.on('terminal-request-size', (event, { id }) => callback(id));
   },
   onConversationDetected: (callback) => {
     ipcRenderer.on('conversation-detected', (event, { id, conversationId }) => callback(id, conversationId));
@@ -34,6 +38,12 @@ contextBridge.exposeInMainWorld('manifold', {
   // SSH remotes
   sshLs: (opts) => ipcRenderer.invoke('ssh-ls', opts),
   sshTest: (opts) => ipcRenderer.invoke('ssh-test', opts),
+  sshSetup: (opts) => ipcRenderer.invoke('ssh-setup', opts),
+
+  // Clipboard — goes through IPC to main process because sandboxed preload
+  // scripts don't have access to Electron's clipboard module on Windows.
+  clipboardReadText: () => ipcRenderer.invoke('clipboard-read'),
+  clipboardWriteText: (text) => ipcRenderer.invoke('clipboard-write', text),
 
   // UI Scale
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
