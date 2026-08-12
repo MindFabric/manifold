@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('manifold', {
   clipboardReadText: () => ipcRenderer.invoke('clipboard-read'),
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard-write', text),
 
+  // Edit menu IPC — menu Copy/Paste clicks (no accelerator, handled in renderer)
+  onMenuCopy: (cb) => ipcRenderer.on('menu-copy', cb),
+  onMenuPaste: (cb) => ipcRenderer.on('menu-paste', cb),
+
   // UI Scale
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
   getZoomFactor: () => webFrame.getZoomFactor(),

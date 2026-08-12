@@ -90,8 +90,12 @@ ipcMain.handle('get-platform', () => process.platform);
 
 // Clipboard — must go through main process because sandboxed preload scripts
 // don't have access to Electron's clipboard module on Windows.
-ipcMain.handle('clipboard-read', () => clipboard.readText());
-ipcMain.handle('clipboard-write', (_, text) => { clipboard.writeText(text); });
+ipcMain.handle('clipboard-read', () => {
+  try { return clipboard.readText(); } catch (e) { return ''; }
+});
+ipcMain.handle('clipboard-write', (_, text) => {
+  try { clipboard.writeText(text); } catch (_) {}
+});
 
 // ── SSH helpers ──
 
@@ -849,10 +853,10 @@ ipcMain.handle('ssh-setup', async (event, { host, port, username, password }) =>
 // ── App lifecycle ──
 
 app.whenReady().then(() => {
-  // Edit menu with standard roles — on macOS these bind Cmd+C/V, on Windows/Linux
-  // Ctrl+C/V. The paste role works by pasting into xterm's hidden textarea, which
-  // xterm detects and forwards to the PTY (including bracketed paste support).
-  // Copy from terminal uses Ctrl+Shift+C (handled in renderer's handleAppShortcut).
+  // Edit menu — Copy/Paste use custom IPC instead of Electron roles to avoid
+  // accelerator conflicts (role: 'copy' steals Ctrl+C from terminal SIGINT,
+  // role: 'paste' fights with our IPC clipboard path). Menu items remain
+  // clickable but keyboard shortcuts are handled entirely in renderer.js.
   const editMenu = {
     label: 'Edit',
     submenu: [
@@ -860,8 +864,8 @@ app.whenReady().then(() => {
       { role: 'redo' },
       { type: 'separator' },
       { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
+      { label: 'Copy', click: () => mainWindow?.webContents.send('menu-copy') },
+      { label: 'Paste', click: () => mainWindow?.webContents.send('menu-paste') },
       { role: 'selectAll' },
     ],
   };

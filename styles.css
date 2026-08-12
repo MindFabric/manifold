@@ -311,6 +311,14 @@ body {
   flex-shrink: 0;
 }
 .row-dot.active { color: #4e9a06; }
+.row-dot.thinking {
+  color: #D97757;
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 .row-idx {
   color: #333;
   font-size: 9px;

@@ -9,6 +9,8 @@ if (!FitAddon) console.error('FitAddon not loaded!');
 
 // Home directory - resolved async at startup
 let homeDir = '/';
+// Platform flag - resolved async at startup
+let isMac = false;
 
 // ── State ──
 const state = {
@@ -24,6 +26,8 @@ const state = {
 const terminalInstances = new Map();
 // Cache last non-empty selection per terminal (survives redraws from Claude Code)
 const lastSelectionCache = new Map();
+const lastDataTime = new Map(); // tabId -> Date.now() of last received data
+const terminalAlive = new Map(); // tabId -> bool, cached from polling
 let tabIdCounter = 0;
 
 // ── DOM refs ──
@@ -74,6 +78,9 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
       background: '#1a1a1a',
       foreground: '#d0d0d0',
       cursor: '#D97757',
+      selectionBackground: '#D9775744',
+      selectionForeground: '#ffffff',
+      selectionInactiveBackground: '#D9775730',
       black: '#2e3436',
       red: '#cc0000',
       green: '#4e9a06',
@@ -109,30 +116,39 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   // Pipe input to pty
   term.onData((data) => manifold.sendInput(tabId, data));
 
-  // Ctrl+C/V are handled by Electron's Edit menu (role: copy/paste).
-  // The paste role works by pasting into xterm's hidden textarea — xterm detects
-  // it and forwards to the PTY with bracketed paste support automatically.
-  // Ctrl+Shift+C/V/A are handled by handleAppShortcut (document capture phase).
-  // This handler only defers non-clipboard app shortcuts.
+  // Keyboard shortcuts are handled by handleAppShortcut (called from xterm's
+  // custom key handler). Copy/paste use our IPC clipboard path exclusively —
+  // Electron's Edit menu has no accelerators to avoid stealing Ctrl+C from SIGINT.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     if (handleAppShortcut(e)) return false;
     return true;
   });
 
-  // Cache selection so it survives redraws (Claude Code clears selections on redraw).
-  // TUI apps (especially over SSH) redraw frequently, clearing xterm selections.
-  // We cache on every selection change AND on mouseup to catch the final selection
-  // before the next redraw wipes it.
+  // Selection-aware write pausing: in SSH/remote sessions, terminal.write() fires
+  // every ~16ms and clears xterm's selection. We pause writes during mouse drags
+  // so the user can select text, then flush queued data on mouseup.
+  //
+  // Cache: we cache non-empty selections and never clear on empty (redraws fire
+  // empty onSelectionChange). Cache is only cleared on new mousedown (new selection).
   term.onSelectionChange(() => {
     const sel = term.getSelection();
     if (sel) lastSelectionCache.set(tabId, sel);
   });
+  el.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+      lastSelectionCache.delete(tabId); // new selection starting
+      selectionPausedTab = tabId;       // pause writes so selection survives
+      // Safety timeout: resume writes after 10s even if mouseup is missed
+      if (selectionPauseTimer) clearTimeout(selectionPauseTimer);
+      selectionPauseTimer = setTimeout(() => resumeWritesIfPaused(true), 10000);
+    }
+  }, true);
   el.addEventListener('mouseup', () => {
-    setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel) lastSelectionCache.set(tabId, sel);
-    }, 5);
+    // Capture final selection before global handler resumes writes
+    const sel = term.getSelection();
+    if (sel) lastSelectionCache.set(tabId, sel);
+    // resumeWritesIfPaused() is called by the global mouseup handler
   }, true);
 
   // Right-click context menu on terminal for copy/paste
@@ -208,6 +224,8 @@ function destroyTerminalInstance(tabId) {
     try { inst.terminal.dispose(); } catch (_) {}
     terminalInstances.delete(tabId);
     lastSelectionCache.delete(tabId);
+    lastDataTime.delete(tabId);
+    terminalAlive.delete(tabId);
   }
 }
 
@@ -221,6 +239,32 @@ function destroyTerminalInstance(tabId) {
 const WRITE_CHUNK_SIZE = 4096;
 const pendingWrites = new Map(); // tabId -> { queue: string[], draining: bool }
 
+// Selection-aware write pausing: while the user is dragging to select text,
+// pause terminal writes so xterm's selection isn't cleared every 16ms by
+// incoming data. Queued data flushes when the mouse is released.
+let selectionPausedTab = null; // tabId currently paused for selection, or null
+let selectionPauseTimer = null;
+
+function resumeWritesIfPaused(force) {
+  if (!selectionPausedTab) return;
+  // Don't resume while user has an active selection — unless forced.
+  // Check both live selection AND cache (cache is set in capture-phase mouseup
+  // before xterm processes the event, so it survives timing races).
+  if (!force) {
+    const id = selectionPausedTab;
+    const inst = terminalInstances.get(id);
+    if (inst && (inst.terminal.getSelection() || lastSelectionCache.get(id))) return;
+  }
+  const id = selectionPausedTab;
+  selectionPausedTab = null;
+  if (selectionPauseTimer) { clearTimeout(selectionPauseTimer); selectionPauseTimer = null; }
+  const ws = pendingWrites.get(id);
+  if (ws && ws.queue.length > 0 && !ws.draining) drainWriteQueue(id);
+}
+
+// Global mouseup: resume writes only if no selection survived the drag.
+document.addEventListener('mouseup', () => resumeWritesIfPaused(false), false);
+
 function getWriteState(id) {
   let ws = pendingWrites.get(id);
   if (!ws) {
@@ -231,6 +275,12 @@ function getWriteState(id) {
 }
 
 function drainWriteQueue(id) {
+  if (selectionPausedTab === id) {
+    // Paused for selection — mark not draining so resume can restart
+    const ws = pendingWrites.get(id);
+    if (ws) ws.draining = false;
+    return;
+  }
   const inst = terminalInstances.get(id);
   const ws = pendingWrites.get(id);
   if (!inst || !ws || ws.queue.length === 0) {
@@ -292,6 +342,7 @@ manifold.onTerminalRequestSize((id) => {
 });
 
 manifold.onTerminalData((id, data) => {
+  lastDataTime.set(id, Date.now());
   const inst = terminalInstances.get(id);
   if (!inst) return;
 
@@ -366,6 +417,7 @@ function renderCollections() {
   });
 
   bindCollectionEvents();
+  updateAllDots();
 }
 
 function bindCollectionEvents() {
@@ -1158,6 +1210,57 @@ function showToast(msg, isError) {
   el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
+// ── Clipboard helpers (shared by shortcuts, context menu, and Edit menu) ──
+
+function copyFromTerminal() {
+  const active = getActiveTerminal();
+  if (!active) return;
+  const sel = active.term.getSelection()
+    || lastSelectionCache.get(active.tabId)
+    || window.getSelection().toString().trim()
+    || '';
+  if (sel) {
+    manifold.clipboardWriteText(sel).then(() => {
+      active.term.clearSelection();
+      lastSelectionCache.delete(active.tabId);
+      resumeWritesIfPaused(true);
+      showToast('Copied');
+    }).catch(err => showToast('Copy failed: ' + err.message, true));
+  } else {
+    showToast('No text selected — Shift+drag to select', true);
+  }
+}
+
+function pasteIntoTerminal() {
+  const active = getActiveTerminal();
+  if (!active) return;
+  manifold.clipboardReadText().then(text => {
+    if (text) {
+      if (active.term.modes.bracketedPasteMode) {
+        manifold.sendInput(active.tabId, '\x1b[200~' + text + '\x1b[201~');
+      } else {
+        manifold.sendInput(active.tabId, text);
+      }
+    }
+  }).catch(err => showToast('Paste failed: ' + err.message, true));
+}
+
+// Edit menu clicks (from main process, no accelerator)
+manifold.onMenuCopy(() => {
+  if (getActiveTerminal()) {
+    copyFromTerminal();
+  } else {
+    document.execCommand('copy');
+  }
+});
+manifold.onMenuPaste(() => {
+  if (getActiveTerminal()) {
+    pasteIntoTerminal();
+  } else {
+    document.execCommand('paste');
+  }
+});
+
 function handleAppShortcut(e) {
   const ctrl = e.ctrlKey || e.metaKey;
 
@@ -1172,43 +1275,10 @@ function handleAppShortcut(e) {
       if (state.collections[ci]) addTerminal(ci);
       return true;
     }
-    // Ctrl+Shift+C — copy selected text from terminal.
-    // Checks xterm selection, cached selection, and browser-native selection.
-    if (e.code === 'KeyC') {
-      const active = getActiveTerminal();
-      if (active) {
-        const sel = active.term.getSelection()
-          || lastSelectionCache.get(active.tabId)
-          || window.getSelection().toString().trim()
-          || '';
-        if (sel) {
-          manifold.clipboardWriteText(sel).then(() => {
-            active.term.clearSelection();
-            lastSelectionCache.delete(active.tabId);
-            showToast('Copied');
-          }).catch(err => showToast('Copy failed: ' + err.message, true));
-        } else {
-          showToast('No text selected — Shift+drag to select', true);
-        }
-      }
-      return true;
-    }
+    // Ctrl+Shift+C — copy selected text from terminal
+    if (e.code === 'KeyC') { copyFromTerminal(); return true; }
     // Ctrl+Shift+V — paste into terminal
-    if (e.code === 'KeyV') {
-      const active = getActiveTerminal();
-      if (active) {
-        manifold.clipboardReadText().then(text => {
-          if (text) {
-            if (active.term.modes.bracketedPasteMode) {
-              manifold.sendInput(active.tabId, '\x1b[200~' + text + '\x1b[201~');
-            } else {
-              manifold.sendInput(active.tabId, text);
-            }
-          }
-        });
-      }
-      return true;
-    }
+    if (e.code === 'KeyV') { pasteIntoTerminal(); return true; }
     // Ctrl+Shift+A — select all terminal content
     if (e.code === 'KeyA') {
       const active = getActiveTerminal();
@@ -1220,8 +1290,35 @@ function handleAppShortcut(e) {
     }
   }
 
-  // Ctrl combos (no shift) — NO clipboard here, handled by xterm's key handler
+  // Mac Cmd combos (no shift) — Cmd+C = copy, Cmd+V = paste (terminal only)
+  if (isMac && e.metaKey && !e.shiftKey && !e.ctrlKey) {
+    if (e.code === 'KeyC') {
+      if (getActiveTerminal()) { copyFromTerminal(); return true; }
+      return false; // non-terminal: browser default
+    }
+    if (e.code === 'KeyV') {
+      if (getActiveTerminal()) { pasteIntoTerminal(); return true; }
+      return false;
+    }
+  }
+
+  // Ctrl combos (no shift)
+  // Ctrl+C — copy if there's a selection, otherwise SIGINT (like Windows Terminal)
+  // Ctrl+V — paste into terminal via IPC.
   if (ctrl && !e.shiftKey) {
+    if (e.code === 'KeyC') {
+      const active = getActiveTerminal();
+      if (active) {
+        const sel = active.term.getSelection() || lastSelectionCache.get(active.tabId) || '';
+        if (sel) { copyFromTerminal(); return true; }
+      }
+      return false; // no selection → let xterm send SIGINT
+    }
+    // Ctrl+V — paste into terminal (all platforms)
+    if (e.code === 'KeyV') {
+      if (getActiveTerminal()) { pasteIntoTerminal(); return true; }
+      return false; // non-terminal: browser default
+    }
     if (e.key === 't') {
       const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
       if (state.collections[ci]) addDefaultSession(ci);
@@ -1375,21 +1472,15 @@ function showTerminalContextMenu(x, y, term, tabId) {
   menu.style.top = `${y}px`;
 
   const sel = term.getSelection() || lastSelectionCache.get(tabId) || window.getSelection().toString().trim() || '';
+  const copyHint = isMac ? '\u2318+C' : 'Ctrl+Shift+C';
+  const pasteHint = isMac ? '\u2318+V' : 'Ctrl+V';
 
   const items = [
     {
       label: 'Copy',
-      hint: 'Ctrl+Shift+C',
+      hint: copyHint,
       disabled: !sel,
-      action: () => {
-        if (sel) {
-          manifold.clipboardWriteText(sel).then(() => {
-            term.clearSelection();
-            lastSelectionCache.delete(tabId);
-            showToast('Copied');
-          });
-        }
-      },
+      action: () => { copyFromTerminal(); },
     },
     {
       label: 'Copy all visible',
@@ -1415,20 +1506,9 @@ function showTerminalContextMenu(x, y, term, tabId) {
     },
     {
       label: 'Paste',
-      hint: 'Ctrl+V',
+      hint: pasteHint,
       disabled: false,
-      action: () => {
-        manifold.clipboardReadText().then(text => {
-          if (text) {
-            if (term.modes.bracketedPasteMode) {
-              manifold.sendInput(tabId, '\x1b[200~' + text + '\x1b[201~');
-            } else {
-              manifold.sendInput(tabId, text);
-            }
-          }
-          term.focus();
-        });
-      },
+      action: () => { pasteIntoTerminal(); term.focus(); },
     },
   ];
 
@@ -1457,6 +1537,25 @@ function showTerminalContextMenu(x, y, term, tabId) {
   }, 0);
 }
 
+// ── Activity dot helpers ──
+function updateDotState(dot, tabId) {
+  const alive = terminalAlive.get(tabId) || false;
+  if (alive) dot.classList.add('active');
+  else dot.classList.remove('active');
+  const lastTime = lastDataTime.get(tabId) || 0;
+  if (alive && Date.now() - lastTime < 3000) {
+    dot.classList.add('thinking');
+  } else {
+    dot.classList.remove('thinking');
+  }
+}
+
+function updateAllDots() {
+  document.querySelectorAll('.row-dot[data-tabid]').forEach(dot => {
+    updateDotState(dot, dot.dataset.tabid);
+  });
+}
+
 // ── Activity polling ──
 setInterval(async () => {
   const tabIds = [...terminalInstances.keys()];
@@ -1464,12 +1563,9 @@ setInterval(async () => {
     tabIds.map(id => manifold.isTerminalActive(id).catch(() => false))
   );
   tabIds.forEach((tabId, i) => {
-    const dot = document.querySelector(`.row-dot[data-tabid="${tabId}"]`);
-    if (dot) {
-      if (results[i]) dot.classList.add('active');
-      else dot.classList.remove('active');
-    }
+    terminalAlive.set(tabId, results[i]);
   });
+  updateAllDots();
 }, 1500);
 
 // ── Auto-save ──
@@ -1531,7 +1627,7 @@ settingsOverlay.addEventListener('click', (e) => {
 });
 
 // ── Shortcuts table (populated after platform detection) ──
-function populateShortcuts(isMac) {
+function populateShortcuts() {
   const mod = isMac ? '\u2318' : 'Ctrl';
   const shortcuts = [
     [`${mod}+T`, 'New session (default source)'],
@@ -1544,10 +1640,11 @@ function populateShortcuts(isMac) {
     ['Alt+1-9', 'Switch to tab N'],
     ['Alt+\u2191/\u2193', 'Jump between collections'],
     ['Alt+\u2190/\u2192', 'Cycle sessions'],
-    ['Ctrl+C', 'Copy selection (or cached)'],
-    ['Ctrl+Shift+C', 'Copy (cached fallback)'],
+    ['Ctrl+C', 'SIGINT (always)'],
+    [isMac ? '\u2318+C' : 'Ctrl+Shift+C', 'Copy from terminal'],
     ['Ctrl+Shift+A', 'Select all terminal content'],
-    ['Ctrl+V / Ctrl+Shift+V', 'Paste into terminal'],
+    [isMac ? '\u2318+V' : 'Ctrl+V', 'Paste into terminal'],
+    ['Ctrl+Shift+V', 'Paste into terminal (alias)'],
     ['Right-click', 'Copy / Paste / Select All'],
     ['Esc', 'Close settings'],
   ];
@@ -2114,13 +2211,13 @@ async function restoreFromState(data) {
   try {
     homeDir = await manifold.getHomeDir() || '/';
     const platform = await manifold.getPlatform();
-    const isMac = platform === 'darwin';
+    isMac = platform === 'darwin';
     document.body.classList.add(`platform-${platform}`);
 
     const mod = isMac ? 'Cmd' : 'Ctrl';
     headerHintMod = mod;
     updateHeaderHints();
-    populateShortcuts(isMac);
+    populateShortcuts();
 
     const savedState = await manifold.loadState();
 
