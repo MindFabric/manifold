@@ -24,8 +24,7 @@ const state = {
 
 // Terminal instances: tabId -> { terminal, fitAddon, element }
 const terminalInstances = new Map();
-// Cache last non-empty selection per terminal (survives redraws from Claude Code)
-const lastSelectionCache = new Map();
+// Last non-empty selection per terminal.
 const lastDataTime = new Map(); // tabId -> Date.now() of last received data
 const terminalAlive = new Map(); // tabId -> bool, cached from polling
 let tabIdCounter = 0;
@@ -72,6 +71,11 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
   const term = new Terminal({
     cursorBlink: true,
     scrollback: 5000,
+    // TUIs like Claude Code enable mouse reporting, which makes xterm disable
+    // selection and forward drags to the pty. The only override on macOS is
+    // Option+drag, and it requires this flag (defaults to false) — without it
+    // text selection is impossible in every mouse-mode terminal.
+    macOptionClickForcesSelection: true,
     fontFamily: '"Share Tech Mono", monospace',
     fontSize: 14,
     theme: {
@@ -125,31 +129,8 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
     return true;
   });
 
-  // Selection-aware write pausing: in SSH/remote sessions, terminal.write() fires
-  // every ~16ms and clears xterm's selection. We pause writes during mouse drags
-  // so the user can select text, then flush queued data on mouseup.
-  //
-  // Cache: we cache non-empty selections and never clear on empty (redraws fire
-  // empty onSelectionChange). Cache is only cleared on new mousedown (new selection).
-  term.onSelectionChange(() => {
-    const sel = term.getSelection();
-    if (sel) lastSelectionCache.set(tabId, sel);
-  });
-  el.addEventListener('mousedown', (e) => {
-    if (e.button === 0) {
-      lastSelectionCache.delete(tabId); // new selection starting
-      selectionPausedTab = tabId;       // pause writes so selection survives
-      // Safety timeout: resume writes after 10s even if mouseup is missed
-      if (selectionPauseTimer) clearTimeout(selectionPauseTimer);
-      selectionPauseTimer = setTimeout(() => resumeWritesIfPaused(true), 10000);
-    }
-  }, true);
-  el.addEventListener('mouseup', () => {
-    // Capture final selection before global handler resumes writes
-    const sel = term.getSelection();
-    if (sel) lastSelectionCache.set(tabId, sel);
-    // resumeWritesIfPaused() is called by the global mouseup handler
-  }, true);
+  // Clicking a terminal moves the sidebar/grid highlight to its tab.
+  el.addEventListener('mousedown', () => syncActiveTabToFocus(tabId), true);
 
   // Right-click context menu on terminal for copy/paste
   el.addEventListener('contextmenu', (e) => {
@@ -207,7 +188,18 @@ function createTerminalInstance(tabId, cwd, conversationId, name, collectionName
       }
     }
 
-    requestAnimationFrame(() => fitTerminal(tabId));
+    requestAnimationFrame(() => {
+      fitTerminal(tabId);
+      const inst = terminalInstances.get(tabId);
+      if (!inst) return;
+      inst.opened = true;
+      // An SSH session may have asked for our size before xterm was measured.
+      // Answer it now that cols/rows reflect the real element.
+      if (inst.pendingSizeRequest) {
+        inst.pendingSizeRequest = false;
+        manifold.resizeTerminal(tabId, inst.terminal.cols, inst.terminal.rows);
+      }
+    });
   });
 
   return { terminal: term, fitAddon, element: el };
@@ -223,7 +215,6 @@ function destroyTerminalInstance(tabId) {
     if (inst.element.parentNode) inst.element.parentNode.removeChild(inst.element);
     try { inst.terminal.dispose(); } catch (_) {}
     terminalInstances.delete(tabId);
-    lastSelectionCache.delete(tabId);
     lastDataTime.delete(tabId);
     terminalAlive.delete(tabId);
   }
@@ -239,31 +230,10 @@ function destroyTerminalInstance(tabId) {
 const WRITE_CHUNK_SIZE = 4096;
 const pendingWrites = new Map(); // tabId -> { queue: string[], draining: bool }
 
-// Selection-aware write pausing: while the user is dragging to select text,
-// pause terminal writes so xterm's selection isn't cleared every 16ms by
-// incoming data. Queued data flushes when the mouse is released.
-let selectionPausedTab = null; // tabId currently paused for selection, or null
-let selectionPauseTimer = null;
-
-function resumeWritesIfPaused(force) {
-  if (!selectionPausedTab) return;
-  // Don't resume while user has an active selection — unless forced.
-  // Check both live selection AND cache (cache is set in capture-phase mouseup
-  // before xterm processes the event, so it survives timing races).
-  if (!force) {
-    const id = selectionPausedTab;
-    const inst = terminalInstances.get(id);
-    if (inst && (inst.terminal.getSelection() || lastSelectionCache.get(id))) return;
-  }
-  const id = selectionPausedTab;
-  selectionPausedTab = null;
-  if (selectionPauseTimer) { clearTimeout(selectionPauseTimer); selectionPauseTimer = null; }
-  const ws = pendingWrites.get(id);
-  if (ws && ws.queue.length > 0 && !ws.draining) drainWriteQueue(id);
-}
-
-// Global mouseup: resume writes only if no selection survived the drag.
-document.addEventListener('mouseup', () => resumeWritesIfPaused(false), false);
+// No selection-aware write pausing here: terminal.write() does not clear an
+// xterm selection. What does is user input, an alt-buffer switch, a scrollback
+// trim past the selection, and mouse-protocol toggles. Pausing writes never
+// addressed any of those — it only froze output for up to 10s.
 
 function getWriteState(id) {
   let ws = pendingWrites.get(id);
@@ -275,12 +245,6 @@ function getWriteState(id) {
 }
 
 function drainWriteQueue(id) {
-  if (selectionPausedTab === id) {
-    // Paused for selection — mark not draining so resume can restart
-    const ws = pendingWrites.get(id);
-    if (ws) ws.draining = false;
-    return;
-  }
   const inst = terminalInstances.get(id);
   const ws = pendingWrites.get(id);
   if (!inst || !ws || ws.queue.length === 0) {
@@ -333,12 +297,17 @@ manifold.onConversationDetected((tabId, conversationId) => {
 });
 
 // Respond to size requests from main process (e.g. after SSH reconnect)
+// Only SSH sessions ask for this (main.js wireUpSshPty, on connect and on every
+// reconnect). At connect time it arrives before xterm has been opened and fitted,
+// so terminal.cols/rows are still the 80x24 constructor defaults. Replying with
+// those tells the remote the wrong width: it wraps its output at column 80 while
+// the visible terminal is far wider, and a drag then selects text that doesn't
+// line up with what's on screen. Defer until we have real dimensions.
 manifold.onTerminalRequestSize((id) => {
   const inst = terminalInstances.get(id);
-  if (inst) {
-    const { cols, rows } = inst.terminal;
-    manifold.resizeTerminal(id, cols, rows);
-  }
+  if (!inst) return;
+  if (!inst.opened) { inst.pendingSizeRequest = true; return; }
+  manifold.resizeTerminal(id, inst.terminal.cols, inst.terminal.rows);
 });
 
 manifold.onTerminalData((id, data) => {
@@ -355,15 +324,6 @@ manifold.onTerminalData((id, data) => {
     buf.push(data);
   }
 });
-
-// Helper: get the active terminal instance
-function getActiveTerminal() {
-  const tab = getActiveTab();
-  if (!tab) return null;
-  const inst = terminalInstances.get(tab.id);
-  if (!inst) return null;
-  return { term: inst.terminal, tabId: tab.id };
-}
 
 // ── Collection rendering ──
 function renderCollections() {
@@ -646,6 +606,26 @@ function bindCollectionEvents() {
 }
 
 // ── Tab selection ──
+// Point state at the clicked terminal WITHOUT re-rendering. selectTab() would
+// call showGridView(), which rebuilds the grid DOM and would wipe the selection
+// the user is in the middle of dragging — so this only moves the highlight.
+function syncActiveTabToFocus(tabId) {
+  let ci = -1, ti = -1;
+  for (let c = 0; c < state.collections.length; c++) {
+    const t = state.collections[c].tabs.findIndex((tab) => tab.id === tabId);
+    if (t !== -1) { ci = c; ti = t; break; }
+  }
+  if (ci === -1) return;
+  if (state.activeCollectionIdx === ci && state.activeTabIdx === ti) return;
+  state.activeCollectionIdx = ci;
+  state.activeTabIdx = ti;
+
+  document.querySelectorAll('.tab-row').forEach((el) => el.classList.remove('selected'));
+  const row = document.querySelector(`.tab-row[data-ci="${ci}"][data-ti="${ti}"]`);
+  if (row) row.classList.add('selected');
+  highlightGridCell(tabId);
+}
+
 function selectTab(ci, ti) {
   state.activeCollectionIdx = ci;
   state.activeTabIdx = ti;
@@ -1210,58 +1190,78 @@ function showToast(msg, isError) {
   el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
-// ── Clipboard helpers (shared by shortcuts, context menu, and Edit menu) ──
+// ── Clipboard ──
+//
+// Cmd+C, Cmd+V and Ctrl+V are deliberately NOT handled here. xterm already
+// registers native "copy" and "paste" DOM listeners on its own element, so the
+// browser does the right thing for free: copy takes the focused terminal's
+// selection, and paste normalizes newlines to CR and applies bracketed paste
+// before feeding term.onData. Intercepting those keys only fought that.
+//
+// What's left is what the browser has no binding for: Ctrl+Shift+C/V, the
+// right-click menu, and the Edit menu.
 
-function copyFromTerminal() {
-  const active = getActiveTerminal();
-  if (!active) return;
-  const sel = active.term.getSelection()
-    || lastSelectionCache.get(active.tabId)
-    || window.getSelection().toString().trim()
-    || '';
-  if (sel) {
-    manifold.clipboardWriteText(sel).then(() => {
-      active.term.clearSelection();
-      lastSelectionCache.delete(active.tabId);
-      resumeWritesIfPaused(true);
-      showToast('Copied');
-    }).catch(err => showToast('Copy failed: ' + err.message, true));
-  } else {
-    showToast('No text selected — Shift+drag to select', true);
+// The terminal you're looking at is the one with focus. No bookkeeping needed.
+function focusedTerminal() {
+  const el = document.activeElement;
+  if (!el) return null;
+  for (const [tabId, inst] of terminalInstances) {
+    if (inst.element.contains(el)) return { term: inst.terminal, tabId };
   }
+  return null;
 }
 
-function pasteIntoTerminal() {
-  const active = getActiveTerminal();
-  if (!active) return;
-  manifold.clipboardReadText().then(text => {
-    if (text) {
-      if (active.term.modes.bracketedPasteMode) {
-        manifold.sendInput(active.tabId, '\x1b[200~' + text + '\x1b[201~');
-      } else {
-        manifold.sendInput(active.tabId, text);
-      }
-    }
-  }).catch(err => showToast('Paste failed: ' + err.message, true));
+// The one place that puts text on the clipboard.
+function writeClipboard(text) {
+  return manifold.clipboardWriteText(text)
+    .then(() => showToast(`Copied ${text.length} chars`))
+    .catch(err => showToast('Copy failed: ' + err.message, true));
 }
 
-// Edit menu clicks (from main process, no accelerator)
+function copyFromTerminal(term) {
+  const t = term || focusedTerminal()?.term;
+  const sel = t ? t.getSelection() : '';
+  if (!sel) {
+    showToast(`No text selected — ${isMac ? 'Option' : 'Shift'}+drag to select`, true);
+    return;
+  }
+  writeClipboard(sel);
+}
+
+function pasteIntoTerminal(term) {
+  const t = term || focusedTerminal()?.term;
+  if (!t) return;
+  // term.paste() handles CRLF normalization and bracketed paste, then emits via
+  // onData — the same path typing takes.
+  manifold.clipboardReadText()
+    .then(text => { if (text) t.paste(text); })
+    .catch(err => showToast('Paste failed: ' + err.message, true));
+}
+
+// Edit menu clicks (the menu items carry no accelerator — see main.js)
 manifold.onMenuCopy(() => {
-  if (getActiveTerminal()) {
-    copyFromTerminal();
-  } else {
-    document.execCommand('copy');
-  }
+  if (focusedTerminal()) copyFromTerminal();
+  else document.execCommand('copy');
 });
 manifold.onMenuPaste(() => {
-  if (getActiveTerminal()) {
-    pasteIntoTerminal();
-  } else {
-    document.execCommand('paste');
-  }
+  if (focusedTerminal()) pasteIntoTerminal();
+  else document.execCommand('paste');
 });
 
+// True for real text fields (rename dialog, SSH form, settings). xterm's hidden
+// helper textarea is excluded — it *is* the terminal, not a field to protect.
+function isTextField(el) {
+  if (!el || !el.tagName) return false;
+  if (el.classList && el.classList.contains('xterm-helper-textarea')) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true;
+}
+
 function handleAppShortcut(e) {
+  // This runs on a document capture listener, so without this guard every
+  // shortcut fires while you're typing in a form — Ctrl/Cmd+V in the rename box
+  // silently pasted into a background terminal instead of the field.
+  if (isTextField(e.target)) return false;
+
   const ctrl = e.ctrlKey || e.metaKey;
 
   // Ctrl+Shift combos — use e.code for reliability across platforms
@@ -1281,44 +1281,17 @@ function handleAppShortcut(e) {
     if (e.code === 'KeyV') { pasteIntoTerminal(); return true; }
     // Ctrl+Shift+A — select all terminal content
     if (e.code === 'KeyA') {
-      const active = getActiveTerminal();
-      if (active) {
-        active.term.selectAll();
-        showToast('Selected all');
-      }
+      const t = focusedTerminal();
+      if (t) { t.term.selectAll(); showToast('Selected all'); }
       return true;
     }
   }
 
-  // Mac Cmd combos (no shift) — Cmd+C = copy, Cmd+V = paste (terminal only)
-  if (isMac && e.metaKey && !e.shiftKey && !e.ctrlKey) {
-    if (e.code === 'KeyC') {
-      if (getActiveTerminal()) { copyFromTerminal(); return true; }
-      return false; // non-terminal: browser default
-    }
-    if (e.code === 'KeyV') {
-      if (getActiveTerminal()) { pasteIntoTerminal(); return true; }
-      return false;
-    }
-  }
-
   // Ctrl combos (no shift)
-  // Ctrl+C — copy if there's a selection, otherwise SIGINT (like Windows Terminal)
-  // Ctrl+V — paste into terminal via IPC.
+  // Cmd+C, Cmd+V, Ctrl+C and Ctrl+V are absent on purpose. Ctrl+C must reach the
+  // terminal as SIGINT, and the other three are already native browser/xterm
+  // actions that target the focused terminal correctly.
   if (ctrl && !e.shiftKey) {
-    if (e.code === 'KeyC') {
-      const active = getActiveTerminal();
-      if (active) {
-        const sel = active.term.getSelection() || lastSelectionCache.get(active.tabId) || '';
-        if (sel) { copyFromTerminal(); return true; }
-      }
-      return false; // no selection → let xterm send SIGINT
-    }
-    // Ctrl+V — paste into terminal (all platforms)
-    if (e.code === 'KeyV') {
-      if (getActiveTerminal()) { pasteIntoTerminal(); return true; }
-      return false; // non-terminal: browser default
-    }
     if (e.key === 't') {
       const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
       if (state.collections[ci]) addDefaultSession(ci);
@@ -1471,7 +1444,7 @@ function showTerminalContextMenu(x, y, term, tabId) {
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  const sel = term.getSelection() || lastSelectionCache.get(tabId) || window.getSelection().toString().trim() || '';
+  const sel = term.getSelection();
   const copyHint = isMac ? '\u2318+C' : 'Ctrl+Shift+C';
   const pasteHint = isMac ? '\u2318+V' : 'Ctrl+V';
 
@@ -1480,7 +1453,7 @@ function showTerminalContextMenu(x, y, term, tabId) {
       label: 'Copy',
       hint: copyHint,
       disabled: !sel,
-      action: () => { copyFromTerminal(); },
+      action: () => { copyFromTerminal(term); },
     },
     {
       label: 'Copy all visible',
@@ -1488,11 +1461,7 @@ function showTerminalContextMenu(x, y, term, tabId) {
       disabled: false,
       action: () => {
         const text = getVisibleTerminalText(term);
-        if (text) {
-          manifold.clipboardWriteText(text).then(() => {
-            showToast(`Copied ${text.length} chars`);
-          });
-        }
+        if (text) writeClipboard(text);
       },
     },
     {
@@ -1508,7 +1477,7 @@ function showTerminalContextMenu(x, y, term, tabId) {
       label: 'Paste',
       hint: pasteHint,
       disabled: false,
-      action: () => { pasteIntoTerminal(); term.focus(); },
+      action: () => { pasteIntoTerminal(term); term.focus(); },
     },
   ];
 
@@ -1641,6 +1610,7 @@ function populateShortcuts() {
     ['Alt+\u2191/\u2193', 'Jump between collections'],
     ['Alt+\u2190/\u2192', 'Cycle sessions'],
     ['Ctrl+C', 'SIGINT (always)'],
+    [isMac ? 'Option+drag' : 'Shift+drag', 'Select text in terminal'],
     [isMac ? '\u2318+C' : 'Ctrl+Shift+C', 'Copy from terminal'],
     ['Ctrl+Shift+A', 'Select all terminal content'],
     [isMac ? '\u2318+V' : 'Ctrl+V', 'Paste into terminal'],
