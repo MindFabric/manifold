@@ -1,0 +1,1 @@
+- [Clipboard platform model](clipboard-platform-model.md) — per-OS copy/paste wiring; the macOS Edit-menu-role gotcha that broke SSH-field & terminal paste

@@ -45,9 +45,12 @@ contextBridge.exposeInMainWorld('manifold', {
   clipboardReadText: () => ipcRenderer.invoke('clipboard-read'),
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard-write', text),
 
-  // Edit menu IPC — menu Copy/Paste clicks (no accelerator, handled in renderer)
+  // Edit menu IPC — menu clicks routed to the renderer's context-aware handlers
+  // (see the Clipboard section in renderer.js for how each is dispatched).
   onMenuCopy: (cb) => ipcRenderer.on('menu-copy', cb),
   onMenuPaste: (cb) => ipcRenderer.on('menu-paste', cb),
+  onMenuCut: (cb) => ipcRenderer.on('menu-cut', cb),
+  onMenuSelectAll: (cb) => ipcRenderer.on('menu-select-all', cb),
 
   // UI Scale
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),

@@ -853,22 +853,46 @@ ipcMain.handle('ssh-setup', async (event, { host, port, username, password }) =>
 // ── App lifecycle ──
 
 app.whenReady().then(() => {
-  // Edit menu — Copy/Paste use custom IPC instead of Electron roles to avoid
-  // accelerator conflicts (role: 'copy' steals Ctrl+C from terminal SIGINT,
-  // role: 'paste' fights with our IPC clipboard path). Menu items remain
-  // clickable but keyboard shortcuts are handled entirely in renderer.js.
-  const editMenu = {
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { label: 'Copy', click: () => mainWindow?.webContents.send('menu-copy') },
-      { label: 'Paste', click: () => mainWindow?.webContents.send('menu-paste') },
-      { role: 'selectAll' },
-    ],
-  };
+  const send = (ch) => mainWindow?.webContents.send(ch);
+
+  // Edit menu — platform-aware, because copy/paste has different constraints on
+  // each OS:
+  //
+  //   macOS: text inputs get Cmd+X/C/V from the Edit menu's roles, so we DO
+  //     register cut/paste roles (Cmd-based keys never collide with the
+  //     terminal's Ctrl-based keys, e.g. Ctrl+C = SIGINT). The one exception is
+  //     Copy: xterm's visual selection isn't a DOM selection, so a plain
+  //     role:'copy' can't read it — we route Cmd+C through the renderer instead
+  //     (registerAccelerator:false shows the ⌘C hint without stealing the key).
+  //
+  //   Windows/Linux: every Ctrl-accelerator a menu role registers (Ctrl+C/X/A/Z)
+  //     would be stolen from the terminal, so ALL items are click-only with no
+  //     registered accelerator. Text inputs still get native Ctrl+X/C/V/Z/A from
+  //     Chromium directly (they don't need the menu on these platforms); the
+  //     terminal uses Ctrl+Shift+C / Ctrl+Shift+V, handled in renderer.js.
+  const editMenu = IS_MAC
+    ? {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { label: 'Copy', accelerator: 'Cmd+C', registerAccelerator: false, click: () => send('menu-copy') },
+          { role: 'paste' },
+          { role: 'selectAll' },
+        ],
+      }
+    : {
+        label: 'Edit',
+        submenu: [
+          { label: 'Cut', click: () => send('menu-cut') },
+          { label: 'Copy', click: () => send('menu-copy') },
+          { label: 'Paste', click: () => send('menu-paste') },
+          { type: 'separator' },
+          { label: 'Select All', click: () => send('menu-select-all') },
+        ],
+      };
 
   if (IS_MAC) {
     Menu.setApplicationMenu(Menu.buildFromTemplate([

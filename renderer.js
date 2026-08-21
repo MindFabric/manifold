@@ -971,10 +971,10 @@ async function addCollection(askPath = false) {
   const ci = state.collections.length - 1;
 
   if (askPath) {
-    const tabId = genTabId();
-    col.tabs.push({ id: tabId, name: 'Session 1', cwd: folderPath });
-    createTerminalInstance(tabId, folderPath, null, 'Session 1', col.name);
-    selectTab(ci, 0);
+    // Open the first session using whatever source is set as the default
+    // (claude / copilot / terminal) instead of always claude. addDefaultSession
+    // pushes the tab, creates the instance, selects it, renders and saves.
+    addDefaultSession(ci, folderPath);
   }
 
   renderCollections();
@@ -1192,14 +1192,26 @@ function showToast(msg, isError) {
 
 // ── Clipboard ──
 //
-// Cmd+C, Cmd+V and Ctrl+V are deliberately NOT handled here. xterm already
-// registers native "copy" and "paste" DOM listeners on its own element, so the
-// browser does the right thing for free: copy takes the focused terminal's
-// selection, and paste normalizes newlines to CR and applies bracketed paste
-// before feeding term.onData. Intercepting those keys only fought that.
+// One coherent model, split only where the platforms genuinely differ. See the
+// Edit-menu comment in main.js for the matching menu setup.
 //
-// What's left is what the browser has no binding for: Ctrl+Shift+C/V, the
-// right-click menu, and the Edit menu.
+// TEXT FIELDS (SSH form, rename dialog, settings):
+//   • macOS  — the Edit menu's cut/paste roles do Cmd+X/Cmd+V natively; Cmd+C is
+//              owned here (see handleAppShortcut) because macOS text inputs get
+//              their clipboard keys from the menu and we can't register a copy
+//              role without breaking terminal copy.
+//   • Win/Linux — Chromium handles Ctrl+X/C/V/Z/A inside inputs on its own; the
+//              menu items are click-only and route through the *ContextAware
+//              helpers below.
+//
+// TERMINAL (xterm):
+//   • Copy MUST go through app code: xterm's visual selection is not a DOM
+//     selection, so no browser/menu copy command can read it. We take
+//     term.getSelection() and write it via the main-process clipboard.
+//   • Paste: on macOS, Cmd+V rides the Edit menu's paste role straight into
+//     xterm's own native paste listener (CRLF normalize + bracketed paste). On
+//     Win/Linux, Ctrl+Shift+V is handled here via term.paste().
+//   • Ctrl+C always reaches the pty as SIGINT — it is never bound to copy.
 
 // The terminal you're looking at is the one with focus. No bookkeeping needed.
 function focusedTerminal() {
@@ -1209,6 +1221,14 @@ function focusedTerminal() {
     if (inst.element.contains(el)) return { term: inst.terminal, tabId };
   }
   return null;
+}
+
+// True for real text fields (rename dialog, SSH form, settings). xterm's hidden
+// helper textarea is excluded — it *is* the terminal, not a field to protect.
+function isTextField(el) {
+  if (!el || !el.tagName) return false;
+  if (el.classList && el.classList.contains('xterm-helper-textarea')) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true;
 }
 
 // The one place that puts text on the clipboard.
@@ -1238,31 +1258,75 @@ function pasteIntoTerminal(term) {
     .catch(err => showToast('Paste failed: ' + err.message, true));
 }
 
-// Edit menu clicks (the menu items carry no accelerator — see main.js)
-manifold.onMenuCopy(() => {
-  if (focusedTerminal()) copyFromTerminal();
-  else document.execCommand('copy');
-});
-manifold.onMenuPaste(() => {
-  if (focusedTerminal()) pasteIntoTerminal();
-  else document.execCommand('paste');
-});
-
-// True for real text fields (rename dialog, SSH form, settings). xterm's hidden
-// helper textarea is excluded — it *is* the terminal, not a field to protect.
-function isTextField(el) {
-  if (!el || !el.tagName) return false;
-  if (el.classList && el.classList.contains('xterm-helper-textarea')) return false;
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true;
+// Insert clipboard text at the caret of a focused input/textarea. Used by the
+// Edit menu's Paste click on Win/Linux, where there is no paste role to lean on.
+function pasteIntoField(el) {
+  manifold.clipboardReadText()
+    .then(text => {
+      if (!text) return;
+      el.focus();
+      // execCommand keeps native undo history; fall back to a manual splice.
+      if (document.execCommand('insertText', false, text)) return;
+      if ('value' in el) {
+        const start = el.selectionStart ?? el.value.length;
+        const end = el.selectionEnd ?? el.value.length;
+        el.value = el.value.slice(0, start) + text + el.value.slice(end);
+        const pos = start + text.length;
+        el.setSelectionRange?.(pos, pos);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    })
+    .catch(err => showToast('Paste failed: ' + err.message, true));
 }
 
-function handleAppShortcut(e) {
-  // This runs on a document capture listener, so without this guard every
-  // shortcut fires while you're typing in a form — Ctrl/Cmd+V in the rename box
-  // silently pasted into a background terminal instead of the field.
-  if (isTextField(e.target)) return false;
+// Context-aware entry points shared by the Edit menu clicks and (for copy) the
+// macOS Cmd+C key path. Each routes to the terminal when one is focused,
+// otherwise to whatever text field / selection the browser knows about.
+function copyContextAware() {
+  if (focusedTerminal()) copyFromTerminal();
+  else document.execCommand('copy');
+}
+function pasteContextAware() {
+  const ft = focusedTerminal();
+  if (ft) { pasteIntoTerminal(ft.term); return; }
+  const el = document.activeElement;
+  if (isTextField(el)) pasteIntoField(el);
+}
+function cutContextAware() {
+  if (!focusedTerminal()) document.execCommand('cut');
+}
+function selectAllContextAware() {
+  const ft = focusedTerminal();
+  if (ft) { ft.term.selectAll(); return; }
+  const el = document.activeElement;
+  if (isTextField(el) && el.select) el.select();
+  else document.execCommand('selectAll');
+}
 
+// Edit menu clicks (see main.js for which platform registers which).
+manifold.onMenuCopy(copyContextAware);
+manifold.onMenuPaste(pasteContextAware);
+manifold.onMenuCut(cutContextAware);
+manifold.onMenuSelectAll(selectAllContextAware);
+
+function handleAppShortcut(e) {
   const ctrl = e.ctrlKey || e.metaKey;
+
+  // macOS Cmd+C is owned here — even inside text fields — because macOS gives
+  // inputs their clipboard keys through the Edit menu, and we can't register a
+  // copy role there without clobbering the terminal's (non-DOM) selection.
+  // copyContextAware() copies the terminal selection when a terminal is focused,
+  // otherwise the focused field / DOM selection. Cmd+V and Cmd+X stay with the
+  // Edit menu's native paste/cut roles.
+  if (isMac && ctrl && !e.shiftKey && !e.altKey && e.code === 'KeyC') {
+    copyContextAware();
+    return true;
+  }
+
+  // Everything below must not fire while typing in a real text field. Without
+  // this guard a bare shortcut (e.g. Ctrl+V in the rename box) would leak into a
+  // background terminal instead of the field.
+  if (isTextField(e.target)) return false;
 
   // Ctrl+Shift combos — use e.code for reliability across platforms
   if (ctrl && e.shiftKey) {
@@ -1275,22 +1339,19 @@ function handleAppShortcut(e) {
       if (state.collections[ci]) addTerminal(ci);
       return true;
     }
-    // Ctrl+Shift+C — copy selected text from terminal
-    if (e.code === 'KeyC') { copyFromTerminal(); return true; }
-    // Ctrl+Shift+V — paste into terminal
-    if (e.code === 'KeyV') { pasteIntoTerminal(); return true; }
-    // Ctrl+Shift+A — select all terminal content
-    if (e.code === 'KeyA') {
-      const t = focusedTerminal();
-      if (t) { t.term.selectAll(); showToast('Selected all'); }
-      return true;
-    }
+    // Terminal copy/paste/select-all. On Win/Linux this is the primary path
+    // (Ctrl+C must stay SIGINT); on macOS these are aliases for Cmd+C/Cmd+V.
+    // They act only when a terminal is focused so Shift+Ctrl elsewhere is free.
+    const ft = focusedTerminal();
+    if (e.code === 'KeyC' && ft) { copyFromTerminal(ft.term); return true; }
+    if (e.code === 'KeyV' && ft) { pasteIntoTerminal(ft.term); return true; }
+    if (e.code === 'KeyA' && ft) { ft.term.selectAll(); showToast('Selected all'); return true; }
   }
 
   // Ctrl combos (no shift)
-  // Cmd+C, Cmd+V, Ctrl+C and Ctrl+V are absent on purpose. Ctrl+C must reach the
-  // terminal as SIGINT, and the other three are already native browser/xterm
-  // actions that target the focused terminal correctly.
+  // Ctrl+C is absent on purpose — it must reach the terminal as SIGINT. On macOS
+  // Cmd+C is handled at the top of this function; Cmd+V/Cmd+X are native Edit
+  // menu roles. On Win/Linux, paste into the terminal is Ctrl+Shift+V (above).
   if (ctrl && !e.shiftKey) {
     if (e.key === 't') {
       const ci = state.activeCollectionIdx >= 0 ? state.activeCollectionIdx : 0;
@@ -1446,7 +1507,7 @@ function showTerminalContextMenu(x, y, term, tabId) {
 
   const sel = term.getSelection();
   const copyHint = isMac ? '\u2318+C' : 'Ctrl+Shift+C';
-  const pasteHint = isMac ? '\u2318+V' : 'Ctrl+V';
+  const pasteHint = isMac ? '\u2318+V' : 'Ctrl+Shift+V';
 
   const items = [
     {
@@ -1612,9 +1673,8 @@ function populateShortcuts() {
     ['Ctrl+C', 'SIGINT (always)'],
     [isMac ? 'Option+drag' : 'Shift+drag', 'Select text in terminal'],
     [isMac ? '\u2318+C' : 'Ctrl+Shift+C', 'Copy from terminal'],
-    ['Ctrl+Shift+A', 'Select all terminal content'],
-    [isMac ? '\u2318+V' : 'Ctrl+V', 'Paste into terminal'],
-    ['Ctrl+Shift+V', 'Paste into terminal (alias)'],
+    [isMac ? '\u2318+V' : 'Ctrl+Shift+V', 'Paste into terminal'],
+    [`${mod}+Shift+A`, 'Select all terminal content'],
     ['Right-click', 'Copy / Paste / Select All'],
     ['Esc', 'Close settings'],
   ];
@@ -1978,7 +2038,7 @@ function showRemoteBrowser(remote, pickPathMode = false, remoteIdx = -1) {
   document.getElementById('remote-browser-close').onclick = () => closeRemoteBrowser();
   document.getElementById('remote-browser-cancel').onclick = () => closeRemoteBrowser();
   document.getElementById('remote-browser-copy').onclick = () => {
-    navigator.clipboard.writeText(remoteBrowserState.currentPath);
+    manifold.clipboardWriteText(remoteBrowserState.currentPath);
     const btn = document.getElementById('remote-browser-copy');
     btn.textContent = '\u2713';
     setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
