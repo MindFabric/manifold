@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('manifold', {
   sshLs: (opts) => ipcRenderer.invoke('ssh-ls', opts),
   sshTest: (opts) => ipcRenderer.invoke('ssh-test', opts),
   sshSetup: (opts) => ipcRenderer.invoke('ssh-setup', opts),
+  tailscaleStatus: () => ipcRenderer.invoke('tailscale-status'),
 
   // Clipboard — goes through IPC to main process because sandboxed preload
   // scripts don't have access to Electron's clipboard module on Windows.

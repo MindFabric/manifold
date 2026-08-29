@@ -4,6 +4,7 @@ const os = require('os');
 const fs = require('fs');
 const pty = require('node-pty');
 const crypto = require('crypto');
+const dns = require('dns');
 const { exec } = require('child_process');
 
 const IS_WIN = process.platform === 'win32';
@@ -722,6 +723,94 @@ ipcMain.handle('ssh-test', async (event, { cmd }) => {
   });
 });
 
+// ── Tailscale ──
+//
+// A Tailscale remote is still just `ssh user@host` — the tailnet handles
+// reachability and, when Tailscale SSH is enabled on the target, authentication
+// too. So everything downstream (spawnSshPty, ssh-ls, ssh-test) is unchanged;
+// all we add here is machine discovery and a setup path that skips the
+// key-copy dance when the tailnet already authenticates us.
+
+// The CLI isn't on PATH in the GUI-app case on macOS, so check known locations.
+// Homebrew first: /usr/local/bin/tailscale is often a stale shell stub left by
+// an uninstalled Tailscale.app that execs a path which no longer exists and
+// exits 127. Existence on disk therefore proves nothing — every candidate is
+// probed by actually running it, and the first that works wins.
+//
+// Note: on Windows runCmd routes through wsl.exe, same as every ssh call in
+// this app. That's deliberate — the ssh that resolves the MagicDNS name runs
+// inside WSL, so discovery has to see the same tailnet that ssh will.
+const TAILSCALE_PATHS = [
+  '/opt/homebrew/bin/tailscale',
+  '/usr/local/bin/tailscale',
+  '/usr/bin/tailscale',
+  '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+  'tailscale', // PATH lookup — covers Linux/WSL and custom installs
+];
+
+let tailscaleBinCache;
+async function findTailscaleBin() {
+  if (tailscaleBinCache !== undefined) return tailscaleBinCache;
+  for (const bin of TAILSCALE_PATHS) {
+    const probe = await runCmd(bin, ['version'], { timeout: 4000 });
+    if (probe.ok) {
+      tailscaleBinCache = bin;
+      return bin;
+    }
+  }
+  tailscaleBinCache = null;
+  return null;
+}
+
+ipcMain.handle('tailscale-status', async () => {
+  const bin = await findTailscaleBin();
+  if (!bin) {
+    return { ok: false, installed: false, error: 'Tailscale CLI not found. Install Tailscale to use tailnet remotes.' };
+  }
+
+  const res = await runCmd(bin, ['status', '--json'], { timeout: 8000 });
+  if (!res.ok) {
+    return { ok: false, installed: true, error: res.stderr || 'tailscale status failed' };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(res.stdout);
+  } catch (_) {
+    return { ok: false, installed: true, error: 'Could not parse tailscale status output' };
+  }
+
+  const clean = (n) => (n || '').replace(/\.$/, '');
+  // Prefer HostName, but some devices report a generic one (iOS commonly sends
+  // "localhost"), so fall back to the machine's own MagicDNS label.
+  const dnsLabel = (p) => clean(p.DNSName).split('.')[0];
+  const machines = Object.values(data.Peer || {})
+    .map((p) => ({
+      name: (p.HostName && p.HostName !== 'localhost') ? p.HostName : (dnsLabel(p) || clean(p.DNSName)),
+      dns: clean(p.DNSName) || (p.TailscaleIPs || [])[0] || '',
+      os: p.OS || '',
+      online: p.Online === true,
+      ip: (p.TailscaleIPs || [])[0] || '',
+    }))
+    .filter((m) => m.dns)
+    // Online first, then alphabetical — you almost always want a live machine.
+    .sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name));
+
+  // A stopped backend still reports the tailnet's peers. Hand them back anyway
+  // so the picker can show what's there alongside an actionable warning, rather
+  // than an empty list that looks like a discovery failure.
+  const running = !data.BackendState || data.BackendState === 'Running';
+  if (!running) {
+    return {
+      ok: false, installed: true, running: false, machines,
+      state: data.BackendState,
+      error: `Tailscale is ${String(data.BackendState).toLowerCase()} \u2014 run \`tailscale up\` to connect.`,
+    };
+  }
+
+  return { ok: true, installed: true, running: true, machines, self: clean(data.Self?.DNSName) };
+});
+
 // ── SSH setup (key generation + key copy) ──
 
 function runCmd(bin, args, opts = {}) {
@@ -792,12 +881,52 @@ function sshCopyIdWithPassword(host, port, username, password) {
   });
 }
 
-ipcMain.handle('ssh-setup', async (event, { host, port, username, password }) => {
+ipcMain.handle('ssh-setup', async (event, { host, port, username, password, tailscale, tsIp }) => {
   const home = os.homedir();
+
+  // MagicDNS names only resolve when Tailscale manages the system resolver.
+  // Homebrew's tailscaled on macOS commonly doesn't, so a name like
+  // `box.tailnet.ts.net` fails with "could not resolve hostname" even though
+  // the tailnet is up. The machine's 100.x address is always routable, so fall
+  // back to it and connect by IP.
+  if (tailscale && tsIp && host !== tsIp) {
+    try {
+      await dns.promises.lookup(host);
+    } catch (_) {
+      host = tsIp;
+    }
+  }
+
   const target = `${username}@${host}`;
   const portArg = port && port !== 22 ? `-p ${port} ` : '';
   const cmd = `ssh ${portArg}${target}`.trim();
   const portArgs = port && port !== 22 ? ['-p', String(port)] : [];
+
+  // Tailscale: when Tailscale SSH is enabled on the target, the tailnet
+  // authenticates us and no local key is involved at all. Test that first so we
+  // never generate or copy a key we don't need. If it fails the machine is
+  // running plain sshd over the tailnet, so we fall through to the normal key
+  // flow below — same as any other host.
+  if (tailscale) {
+    const tsTest = await runCmd('ssh', [
+      ...portArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      target, 'echo', 'ok',
+    ]);
+    if (tsTest.ok && tsTest.stdout === 'ok') {
+      return { ok: true, keyAuthWorked: true, tailscaleSsh: true, cmd, host };
+    }
+
+    // Tailscale SSH answered and refused the login on policy grounds. Copying a
+    // key cannot fix that, so report it instead of falling through to the key
+    // flow and emitting a confusing ssh-copy-id error.
+    if (/tailnet policy does not permit/i.test(tsTest.stderr || '')) {
+      return {
+        ok: false, cmd, host, policyDenied: true,
+        error: `Tailscale SSH refused "${username}" on this machine. Use a username its tailnet SSH policy allows, or update the policy.`,
+      };
+    }
+  }
 
   // Step 1: Check for local SSH key
   const keyCheck = await runCmd('bash', ['-c',

@@ -1646,11 +1646,32 @@ document.getElementById('btn-new-collection').addEventListener('click', () => {
 const settingsOverlay = document.getElementById('settings-overlay');
 
 document.getElementById('settings-btn').addEventListener('click', () => {
+  const opening = settingsOverlay.classList.contains('hidden');
   settingsOverlay.classList.toggle('hidden');
+  if (opening) showSettingsPane('general');
 });
 
 document.getElementById('settings-close-btn').addEventListener('click', () => {
   settingsOverlay.classList.add('hidden');
+});
+
+// Sidebar nav — one pane visible at a time. Panes and nav buttons are matched
+// by their shared data-pane value, so adding a section means adding markup only.
+const settingsNav = document.getElementById('settings-nav');
+const settingsPanes = document.getElementById('settings-panes');
+
+function showSettingsPane(name) {
+  settingsNav.querySelectorAll('.settings-nav-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.pane === name);
+  });
+  settingsPanes.querySelectorAll('.settings-pane').forEach((pane) => {
+    pane.classList.toggle('active', pane.dataset.pane === name);
+  });
+  settingsPanes.scrollTop = 0;
+}
+
+settingsNav.querySelectorAll('.settings-nav-btn').forEach((btn) => {
+  btn.addEventListener('click', () => showSettingsPane(btn.dataset.pane));
 });
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
@@ -1752,37 +1773,57 @@ document.getElementById('nuke-btn').addEventListener('click', async () => {
 
 // ── Remote destinations management ──
 
+// Connection-test results, keyed by ssh cmd so they survive re-renders and the
+// index shifts a delete causes. Session-only — deliberately not in `state`.
+const remoteStatus = new Map();
+const STATUS_TITLE = { unknown: 'Not tested', ok: 'Connection OK', fail: 'Connection failed' };
+
 function renderRemotes() {
   const list = document.getElementById('remotes-list');
   if (!list) return;
+
+  if (!state.remotes.length) {
+    list.innerHTML = '<div class="remotes-empty">No remote destinations yet.</div>';
+    return;
+  }
+
   list.innerHTML = state.remotes.map((r, i) => {
     const hostDisplay = r.host
       ? `${r.username || ''}@${r.host}${r.port && r.port !== 22 ? ':' + r.port : ''}`
       : r.cmd;
+    const tsBadge = r.tailscale ? '<span class="remote-row-badge">tailnet</span>' : '';
+    const st = remoteStatus.get(r.cmd) || 'unknown';
     return `
     <div class="remote-row" data-ri="${i}">
       <div class="remote-row-info">
-        <span class="remote-row-name remote-editable" data-ri="${i}" data-field="name" title="Click to edit name">${escHtml(r.name)}</span>
-        <span class="remote-row-host remote-editable" data-ri="${i}" data-field="cmd" title="Click to edit SSH command">${escHtml(hostDisplay)}</span>
-        <span class="remote-row-path remote-editable" data-ri="${i}" data-field="defaultPath" title="Click to edit path">${escHtml(r.defaultPath)}</span>
+        <div class="remote-row-top">
+          <span class="remote-row-dot ${st}" title="${STATUS_TITLE[st]}"></span>
+          <span class="remote-row-name remote-editable" data-ri="${i}" data-field="name" title="Click to edit name">${escHtml(r.name)}</span>${tsBadge}
+        </div>
+        <div class="remote-row-meta">
+          <span class="remote-editable" data-ri="${i}" data-field="cmd" title="Click to edit SSH command">${escHtml(hostDisplay)}</span>
+          <span class="remote-row-sep">&middot;</span>
+          <span class="remote-row-path remote-editable" data-ri="${i}" data-field="defaultPath" title="Click to edit path">${escHtml(r.defaultPath)}</span>
+        </div>
       </div>
       <div class="remote-row-btns">
-        <button class="remote-row-btn remote-test-btn" data-ri="${i}" title="Test connection">&#x21BB;</button>
-        <button class="remote-row-btn remote-browse-btn" data-ri="${i}" title="Browse to set path">&#x25B8;</button>
-        <button class="remote-row-btn remote-row-btn-del remote-del-btn" data-ri="${i}" title="Delete">&times;</button>
+        <button class="remote-row-btn remote-test-btn" data-ri="${i}" title="Test connection">Test</button>
+        <button class="remote-row-btn remote-browse-btn" data-ri="${i}" title="Browse to set path">Browse</button>
+        <button class="remote-row-btn remote-row-btn-del remote-del-btn" data-ri="${i}" title="Delete">Remove</button>
       </div>
     </div>`;
   }).join('');
 
   list.querySelectorAll('.remote-test-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const ri = parseInt(btn.dataset.ri);
-      const r = state.remotes[ri];
-      btn.textContent = '...';
+      const r = state.remotes[parseInt(btn.dataset.ri)];
+      if (!r) return;
+      btn.textContent = 'Testing';
+      btn.disabled = true;
       const result = await manifold.sshTest({ cmd: r.cmd });
-      btn.textContent = result.ok ? '\u2713' : '\u2717';
-      btn.style.color = result.ok ? '#4e9a06' : '#e74c3c';
-      setTimeout(() => { btn.textContent = '\u21BB'; btn.style.color = ''; }, 3000);
+      remoteStatus.set(r.cmd, result.ok ? 'ok' : 'fail');
+      renderRemotes(); // repaints the dot and resets this button
+      if (!result.ok) showToast(`${r.name}: ${result.error || 'connection failed'}`, true);
     });
   });
 
@@ -1833,6 +1874,94 @@ function buildSshCmd(host, port, username) {
   return `ssh ${portPart}${username}@${host}`;
 }
 
+// Which connection type the form is currently in. A Tailscale remote still
+// produces a plain `ssh user@host` cmd, so the only lasting difference is the
+// `tailscale` flag we store for display.
+let remoteFormType = 'ssh';
+let tsSelectedMachine = null;
+let tsBackendRunning = true;
+
+function setRemoteFormType(type) {
+  remoteFormType = type;
+  tsSelectedMachine = null;
+
+  document.getElementById('remote-form-type').querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.type === type);
+  });
+
+  const isTs = type === 'tailscale';
+  // Tailnet handles routing and ports, so Host and Port are picker-driven.
+  document.getElementById('remote-form-ts-row').classList.toggle('hidden', !isTs);
+  document.getElementById('remote-form-host-row').classList.toggle('hidden', isTs);
+  document.getElementById('remote-form-port-row').classList.toggle('hidden', isTs);
+  document.getElementById('remote-form-password-row').classList.add('hidden');
+
+  const status = document.getElementById('remote-form-status');
+  status.classList.add('hidden');
+  status.innerHTML = '';
+
+  const sub = document.getElementById('remote-form-sub');
+  if (sub) sub.textContent = isTs ? 'Pick a machine from your tailnet' : 'Connect over SSH';
+
+  const submit = document.getElementById('remote-form-submit');
+  submit.disabled = false;
+  submit.textContent = isTs ? 'Add Machine' : 'Connect & Add';
+
+  if (isTs) loadTailnetMachines();
+}
+
+function renderTsPicker(machines, warning) {
+  const picker = document.getElementById('remote-form-ts-picker');
+  const banner = warning
+    ? `<div class="remote-ts-warn">${escHtml(warning)}</div>`
+    : '';
+  if (!machines.length) {
+    picker.innerHTML = banner || '<div class="remote-ts-empty">No other machines on this tailnet.</div>';
+    return;
+  }
+  picker.innerHTML = banner + machines.map((m, i) => `
+    <button class="remote-ts-item" data-mi="${i}" title="${escHtml(m.dns)}">
+      <span class="remote-ts-dot ${m.online ? 'online' : 'offline'}"></span>
+      <span class="remote-ts-name">${escHtml(m.name)}</span>
+      <span class="remote-ts-ip">${escHtml(m.ip)}</span>
+      <span class="remote-ts-os">${escHtml(m.os)}</span>
+    </button>`).join('');
+
+  picker.querySelectorAll('.remote-ts-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const m = machines[parseInt(btn.dataset.mi)];
+      tsSelectedMachine = m;
+      picker.querySelectorAll('.remote-ts-item').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      // Prefill the name from the machine unless the user already typed one.
+      const nameEl = document.getElementById('remote-form-name');
+      if (!nameEl.value.trim()) nameEl.value = m.name;
+    });
+  });
+}
+
+async function loadTailnetMachines() {
+  const picker = document.getElementById('remote-form-ts-picker');
+  picker.innerHTML = '<div class="remote-ts-empty">Loading tailnet\u2026</div>';
+  try {
+    const res = await manifold.tailscaleStatus();
+    tsBackendRunning = res.running !== false;
+
+    // A stopped tailnet still lists its peers — show them under a warning.
+    if (!res.ok && !(res.machines || []).length) {
+      picker.innerHTML = `<div class="remote-ts-empty remote-ts-error">${escHtml(res.error || 'Tailscale unavailable')}</div>`;
+      return;
+    }
+    renderTsPicker(res.machines || [], res.ok ? null : res.error);
+  } catch (err) {
+    picker.innerHTML = `<div class="remote-ts-empty remote-ts-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+document.getElementById('remote-form-type').querySelectorAll('.seg-btn').forEach((btn) => {
+  btn.addEventListener('click', () => setRemoteFormType(btn.dataset.type));
+});
+
 function showAddRemoteForm() {
   const form = document.getElementById('add-remote-form');
   document.getElementById('add-remote-btn').classList.add('hidden');
@@ -1844,6 +1973,7 @@ function showAddRemoteForm() {
   document.getElementById('remote-form-username').value = '';
   document.getElementById('remote-form-password').value = '';
   document.getElementById('remote-form-password-row').classList.add('hidden');
+  setRemoteFormType('ssh');
 
   const status = document.getElementById('remote-form-status');
   status.classList.add('hidden');
@@ -1884,27 +2014,37 @@ async function submitAddRemoteForm() {
   const passwordEl = document.getElementById('remote-form-password');
   const submitBtn = document.getElementById('remote-form-submit');
 
+  const isTs = remoteFormType === 'tailscale';
   const name = nameEl.value.trim();
-  const host = hostEl.value.trim();
-  const port = parseInt(portEl.value) || 22;
+  // In Tailscale mode the host comes from the picker, not the text field.
+  const host = isTs ? (tsSelectedMachine ? tsSelectedMachine.dns : '') : hostEl.value.trim();
+  const port = isTs ? 22 : (parseInt(portEl.value) || 22);
   const username = usernameEl.value.trim();
   const password = passwordEl.value;
 
   if (!name) { nameEl.focus(); showFormStatus('Name is required', 'error'); return; }
+  if (isTs && !tsSelectedMachine) { showFormStatus('Pick a machine from your tailnet', 'error'); return; }
+  if (isTs && !tsBackendRunning) {
+    showFormStatus('Tailscale isn\u2019t connected \u2014 run `tailscale up`, then reopen this form.', 'error');
+    return;
+  }
   if (!host) { hostEl.focus(); showFormStatus('Host is required', 'error'); return; }
   if (!username) { usernameEl.focus(); showFormStatus('Username is required', 'error'); return; }
-  if (port < 1 || port > 65535) { portEl.focus(); showFormStatus('Port must be 1-65535', 'error'); return; }
+  if (!isTs && (port < 1 || port > 65535)) { portEl.focus(); showFormStatus('Port must be 1-65535', 'error'); return; }
 
   submitBtn.disabled = true;
   submitBtn.textContent = 'Setting up...';
-  showFormSpinner('Checking SSH key and testing connection...');
+  showFormSpinner(isTs
+    ? 'Connecting over the tailnet\u2026'
+    : 'Checking SSH key and testing connection...');
 
   try {
-    const result = await manifold.sshSetup({ host, port, username, password: password || null });
+    const result = await manifold.sshSetup({ host, port, username, password: password || null, tailscale: isTs, tsIp: isTs && tsSelectedMachine ? tsSelectedMachine.ip : null });
 
     if (result.ok) {
       const cmd = result.cmd || buildSshCmd(host, port, username);
-      state.remotes.push({ name, cmd, host, port, username, defaultPath: '/' });
+      const effHost = result.host || host;
+      state.remotes.push({ name, cmd, host: effHost, port, username, defaultPath: '/', ...(isTs ? { tailscale: true } : {}) });
       renderRemotes();
       saveState();
       hideAddRemoteForm();
@@ -1912,10 +2052,20 @@ async function submitAddRemoteForm() {
       return;
     }
 
+    if (result.policyDenied) {
+      showFormStatus(result.error, 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Retry';
+      document.getElementById('remote-form-username').focus();
+      return;
+    }
+
     if (result.needsPassword) {
       document.getElementById('remote-form-password-row').classList.remove('hidden');
       passwordEl.focus();
-      showFormStatus('Key auth failed — enter password to copy your SSH key to the server.', 'error');
+      showFormStatus(isTs
+        ? 'Reachable over the tailnet, but Tailscale SSH isn\u2019t enabled on this machine \u2014 enter its password once to copy your SSH key.'
+        : 'Key auth failed — enter password to copy your SSH key to the server.', 'error');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Copy Key & Add';
       return;

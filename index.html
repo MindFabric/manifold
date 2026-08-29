@@ -52,7 +52,13 @@
             <button id="settings-close-btn">&times;</button>
           </div>
           <div id="settings-body">
-            <div class="settings-section">
+            <nav id="settings-nav">
+              <button class="settings-nav-btn active" data-pane="general">General</button>
+              <button class="settings-nav-btn" data-pane="remotes">Remotes</button>
+              <button class="settings-nav-btn" data-pane="about">About</button>
+            </nav>
+            <div id="settings-panes">
+            <section class="settings-pane active" data-pane="general">
               <div class="settings-section-title">DISPLAY</div>
               <div class="settings-row-slider">
                 <div class="settings-slider-top">
@@ -66,51 +72,69 @@
                   <span>200%</span>
                 </div>
               </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-section-title">NEW SESSION</div>
+              <div class="settings-section-title settings-section-title-sub">NEW SESSION</div>
               <div class="settings-row-segmented">
                 <div class="settings-segmented-top">
                   <span class="settings-label">Default source</span>
                   <span class="settings-desc">What <span class="settings-kbd" id="default-source-kbd">Ctrl+T</span> launches</span>
                 </div>
                 <div id="default-source-seg" class="settings-segmented">
-                  <button class="seg-btn" data-source="claude">&#x2726; Claude</button>
-                  <button class="seg-btn" data-source="copilot">&#x2708; Copilot</button>
-                  <button class="seg-btn" data-source="terminal">&gt;_ Terminal</button>
+                  <button class="seg-btn" data-source="claude">Claude</button>
+                  <button class="seg-btn" data-source="copilot">Copilot</button>
+                  <button class="seg-btn" data-source="terminal">Terminal</button>
                 </div>
               </div>
-            </div>
-            <div class="settings-section">
+            </section>
+            <section class="settings-pane" data-pane="remotes">
               <div class="settings-section-title">REMOTE DESTINATIONS</div>
               <div id="remotes-list"></div>
               <button id="add-remote-btn" class="settings-row-btn settings-row-btn-add">
                 <div class="settings-row-btn-text">
-                  <span class="settings-label">+ Add Remote</span>
-                  <span class="settings-desc">Configure an SSH host for remote Claude sessions</span>
+                  <span class="settings-label">Add remote</span>
+                  <span class="settings-desc">SSH host or tailnet machine</span>
                 </div>
                 <span class="settings-row-arrow">&rsaquo;</span>
               </button>
               <div id="add-remote-form" class="hidden">
                 <div class="remote-form-header">
-                  <span class="remote-form-title">NEW REMOTE</span>
+                  <div class="remote-form-header-text">
+                    <span class="remote-form-title">NEW REMOTE</span>
+                    <span class="remote-form-sub" id="remote-form-sub">Connect over SSH</span>
+                  </div>
                   <button id="add-remote-form-close" class="remote-form-close">&times;</button>
                 </div>
                 <div class="remote-form-fields">
                   <div class="remote-form-row">
-                    <label class="remote-form-label">Name</label>
-                    <input id="remote-form-name" type="text" class="remote-form-input" placeholder="e.g. My Server" autocomplete="off" spellcheck="false">
+                    <label class="remote-form-label">Connection</label>
+                    <div id="remote-form-type" class="settings-segmented">
+                      <button class="seg-btn active" data-type="ssh">SSH</button>
+                      <button class="seg-btn" data-type="tailscale">Tailscale</button>
+                    </div>
                   </div>
-                  <div class="remote-form-row">
-                    <label class="remote-form-label">Host / IP</label>
-                    <input id="remote-form-host" type="text" class="remote-form-input" placeholder="e.g. 192.168.1.100 or myserver.com" autocomplete="off" spellcheck="false">
+                  <div id="remote-form-ts-row" class="remote-form-row hidden">
+                    <label class="remote-form-label">Machine
+                      <span class="remote-form-hint">(from your tailnet)</span>
+                    </label>
+                    <div id="remote-form-ts-picker" class="remote-ts-picker">
+                      <div class="remote-ts-empty">Loading tailnet…</div>
+                    </div>
+                  </div>
+                  <div class="remote-form-row-pair remote-form-row-pair-wide">
+                    <div class="remote-form-row">
+                      <label class="remote-form-label">Name</label>
+                      <input id="remote-form-name" type="text" class="remote-form-input" placeholder="e.g. My Server" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="remote-form-row" id="remote-form-host-row">
+                      <label class="remote-form-label">Host / IP</label>
+                      <input id="remote-form-host" type="text" class="remote-form-input" placeholder="e.g. 192.168.1.100 or myserver.com" autocomplete="off" spellcheck="false">
+                    </div>
                   </div>
                   <div class="remote-form-row-pair">
                     <div class="remote-form-row remote-form-row-half">
                       <label class="remote-form-label">Username</label>
                       <input id="remote-form-username" type="text" class="remote-form-input" placeholder="e.g. user" autocomplete="off" spellcheck="false">
                     </div>
-                    <div class="remote-form-row remote-form-row-half">
+                    <div class="remote-form-row remote-form-row-half" id="remote-form-port-row">
                       <label class="remote-form-label">Port</label>
                       <input id="remote-form-port" type="number" class="remote-form-input" value="22" min="1" max="65535">
                     </div>
@@ -126,13 +150,16 @@
                   <button id="remote-form-submit" class="remote-form-btn remote-form-btn-primary">Connect & Add</button>
                 </div>
               </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-section-title">KEYBOARD SHORTCUTS</div>
+            </section>
+            <section class="settings-pane" data-pane="about">
+              <div class="settings-section-title">ABOUT</div>
+              <div class="settings-about">
+                <span class="settings-about-name">Manifold</span>
+                <span class="settings-about-version">Electron &middot; Multi-session workspace</span>
+              </div>
+              <div class="settings-section-title settings-section-title-sub">KEYBOARD SHORTCUTS</div>
               <div id="shortcuts-table" class="settings-shortcuts"></div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-section-title">DATA</div>
+              <div class="settings-section-title settings-section-title-sub">DATA</div>
               <button id="nuke-btn" class="settings-row-btn settings-row-btn-nuke">
                 <div class="settings-row-btn-text">
                   <span class="settings-label">Factory Reset</span>
@@ -140,13 +167,7 @@
                 </div>
                 <span class="settings-row-arrow">&rsaquo;</span>
               </button>
-            </div>
-            <div class="settings-section">
-              <div class="settings-section-title">ABOUT</div>
-              <div class="settings-about">
-                <span class="settings-about-name">Manifold</span>
-                <span class="settings-about-version">Electron &middot; Multi-session workspace</span>
-              </div>
+            </section>
             </div>
           </div>
         </div>

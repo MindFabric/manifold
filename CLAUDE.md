@@ -1,19 +1,18 @@
 # Manifold — Claude Code Workspace Manager
 
-An Electron app that runs multiple Claude Code sessions in parallel with collections, grid view, auto-naming, conversation tracking, and a dev journal.
+An Electron app that runs multiple Claude Code sessions in parallel with collections, grid view, auto-naming, and conversation tracking.
 
 ## Architecture
 
-6 core files, no framework, vanilla JS:
+5 core files, no framework, vanilla JS:
 
 | File | Role |
 |------|------|
-| `main.js` | Electron main process: window, IPC, node-pty terminals, state persistence, journal |
+| `main.js` | Electron main process: window, IPC, node-pty terminals, state persistence |
 | `preload.js` | Context bridge — exposes `claude` IPC API to renderer. **Do not edit** (overwritten on reload) |
 | `renderer.js` | All client-side logic: collections, tabs, grid view, keybindings, auto-naming |
-| `styles.css` | Dark theme, layout, grid, journal viewer |
+| `styles.css` | Dark theme, layout, grid |
 | `index.html` | HTML shell |
-| `journal.js` | Dev journal — captures terminal buffers, summarizes via Claude, writes daily markdown |
 
 ## Key Patterns
 
@@ -21,7 +20,6 @@ An Electron app that runs multiple Claude Code sessions in parallel with collect
 - **Terminals**: `node-pty` spawns, tracked in `Map` by tab ID
 - **Conversations**: Detected by watching `~/.claude/projects/<encoded-path>/*.jsonl`
 - **IPC**: All renderer↔main communication through `preload.js` bridge
-- **Journal**: Ring buffer (400 lines/terminal), summarized every 5 minutes to `~/Documents/journal/`
 
 ## Style
 

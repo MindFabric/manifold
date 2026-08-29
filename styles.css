@@ -504,8 +504,12 @@ body {
   background: #1a1a1a;
   border: 1px solid #2a2a2a;
   border-radius: 12px;
-  width: 400px;
-  max-height: 80vh;
+  /* Percentages resolve against #settings-overlay (inset:0 of #content), so
+     they track the content area beside the sidebar rather than the viewport. */
+  width: min(960px, 94%);
+  /* Fixed height: panes differ a lot in length (About is 2 lines, Shortcuts is
+     17 rows) and a shrink-to-fit dialog would jump on every nav click. */
+  height: min(740px, 92%);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -515,15 +519,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 18px 24px;
   border-bottom: 1px solid #2a2a2a;
   flex-shrink: 0;
 }
 #settings-title {
   color: #D97757;
   font-weight: bold;
-  font-size: 12px;
-  letter-spacing: 2px;
+  font-size: 13px;
+  letter-spacing: 3px;
 }
 #settings-close-btn {
   color: #555;
@@ -537,25 +541,76 @@ body {
 #settings-close-btn:hover { color: #d0d0d0; }
 #settings-body {
   flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ── Settings sidebar nav ── */
+#settings-nav {
+  width: 190px;
+  flex-shrink: 0;
+  border-right: 1px solid #2a2a2a;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   overflow-y: auto;
-  padding: 12px;
 }
-.settings-section {
-  margin-bottom: 16px;
+.settings-nav-btn {
+  position: relative;
+  text-align: left;
+  padding: 10px 12px 10px 22px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #777;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
 }
+.settings-nav-btn:hover {
+  background: #1e1e1e;
+  color: #d0d0d0;
+}
+/* The caret marks the active pane without shifting the label. */
+.settings-nav-btn.active {
+  color: #D97757;
+  background: #1e1614;
+}
+.settings-nav-btn.active::before {
+  content: '\203a';
+  position: absolute;
+  left: 10px;
+  color: #D97757;
+}
+#settings-panes {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px 28px 28px;
+}
+.settings-pane { display: none; }
+.settings-pane.active { display: block; }
 .settings-section-title {
-  color: #555;
-  font-size: 9px;
+  color: #666;
+  font-size: 10px;
   font-weight: bold;
-  letter-spacing: 2px;
-  margin: 4px 6px 8px;
+  letter-spacing: 2.5px;
+  margin: 0 0 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #242424;
+}
+/* A second heading within a pane — needs top space the pane's first one doesn't. */
+.settings-section-title-sub {
+  margin-top: 32px;
 }
 .settings-row-btn {
   display: flex;
   align-items: center;
   width: 100%;
-  padding: 10px 12px;
-  margin-bottom: 2px;
+  padding: 14px 16px;
+  margin-bottom: 6px;
   background: #141414;
   border: 1px solid #222;
   border-radius: 8px;
@@ -574,13 +629,14 @@ body {
 }
 .settings-row-btn .settings-label {
   color: #d0d0d0;
-  font-size: 12px;
+  font-size: 13px;
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 .settings-row-btn .settings-desc {
-  color: #555;
-  font-size: 10px;
+  color: #666;
+  font-size: 11px;
+  line-height: 1.4;
   display: block;
 }
 .settings-row-arrow {
@@ -601,21 +657,21 @@ body {
 .settings-row-btn-nuke:hover .settings-row-arrow { color: #e74c3c; }
 /* ── Settings segmented control ── */
 .settings-row-segmented {
-  padding: 4px 6px;
+  padding: 0;
 }
 .settings-segmented-top {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .settings-segmented-top .settings-label {
   color: #d0d0d0;
-  font-size: 12px;
+  font-size: 13px;
 }
 .settings-segmented-top .settings-desc {
-  color: #555;
-  font-size: 10px;
+  color: #666;
+  font-size: 11px;
 }
 .settings-kbd {
   color: #888;
@@ -626,17 +682,17 @@ body {
 }
 .settings-segmented {
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 .seg-btn {
   flex: 1;
-  padding: 8px 6px;
+  padding: 11px 10px;
   background: #141414;
   border: 1px solid #222;
   border-radius: 8px;
   color: #999;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
@@ -652,8 +708,8 @@ body {
 }
 /* ── Settings slider ── */
 .settings-row-slider {
-  padding: 10px 12px;
-  margin-bottom: 2px;
+  padding: 16px 18px;
+  margin-bottom: 6px;
   background: #141414;
   border: 1px solid #222;
   border-radius: 8px;
@@ -662,15 +718,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .settings-row-slider .settings-label {
   color: #d0d0d0;
-  font-size: 12px;
+  font-size: 13px;
 }
 .settings-scale-value {
   color: #D97757;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: bold;
   min-width: 40px;
   text-align: right;
@@ -678,9 +734,9 @@ body {
 .settings-slider-ticks {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  color: #444;
-  font-size: 9px;
+  margin-top: 8px;
+  color: #555;
+  font-size: 10px;
 }
 #scale-slider {
   -webkit-appearance: none;
@@ -710,18 +766,18 @@ body {
 }
 
 .settings-about {
-  padding: 8px 12px;
+  padding: 0 2px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 .settings-about-name {
-  color: #777;
-  font-size: 12px;
+  color: #999;
+  font-size: 15px;
 }
 .settings-about-version {
-  color: #444;
-  font-size: 10px;
+  color: #555;
+  font-size: 11px;
 }
 
 /* ── Shortcuts table ── */
@@ -729,16 +785,25 @@ body {
   background: #141414;
   border: 1px solid #222;
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 12px 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 36px;
 }
 .shortcut-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 0;
+  gap: 12px;
+  padding: 8px 0;
   border-bottom: 1px solid #1e1e1e;
 }
-.shortcut-row:last-child {
+/* In a 2-column row-major grid the bottom of each column is always one of the
+   final two items, whatever the total parity: with an odd count the last item
+   ends the left column and the one before it ends the right, and with an even
+   count it's the reverse. So the last two lose the rule, unconditionally. */
+.shortcut-row:last-child,
+.shortcut-row:nth-last-child(2) {
   border-bottom: none;
 }
 .shortcut-key {
@@ -746,7 +811,7 @@ body {
   font-size: 11px;
   font-weight: bold;
   background: #1e1e1e;
-  padding: 2px 6px;
+  padding: 3px 7px;
   border-radius: 4px;
   border: 1px solid #2a2a2a;
   white-space: nowrap;
@@ -840,56 +905,203 @@ body {
 .settings-remotes-list {
   margin-bottom: 4px;
 }
+.remotes-empty {
+  padding: 18px;
+  margin-bottom: 8px;
+  border: 1px dashed #242424;
+  border-radius: 8px;
+  color: #555;
+  font-size: 11px;
+  text-align: center;
+}
 .remote-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  margin-bottom: 2px;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 6px;
   background: #141414;
   border: 1px solid #222;
   border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.remote-row:hover {
+  background: #171717;
+  border-color: #2c2c2c;
 }
 .remote-row-info {
   flex: 1;
   min-width: 0;
 }
+.remote-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+/* Last test result. Grey until tested — never implies a state we don't know. */
+.remote-row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #3a3a3a;
+}
+.remote-row-dot.ok { background: #4e9a06; }
+.remote-row-dot.fail { background: #e74c3c; }
 .remote-row-name {
   color: #d0d0d0;
-  font-size: 12px;
-  display: block;
+  font-size: 13px;
 }
-.remote-row-host {
-  color: #555;
-  font-size: 10px;
-  display: block;
+/* Host and path share one line — two stacked lines made every row feel bulky. */
+.remote-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-left: 14px;
+  color: #666;
+  font-size: 11px;
+  min-width: 0;
+}
+.remote-row-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-row-sep {
+  color: #333;
+  flex-shrink: 0;
+}
+.remote-row-path {
+  color: #a06048;
+  flex-shrink: 0;
 }
 .remote-row-btns {
   display: flex;
-  gap: 4px;
+  gap: 2px;
+  flex-shrink: 0;
+  /* Actions stay out of the way until you reach for the row; focus-within keeps
+     them reachable by keyboard. */
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.remote-row:hover .remote-row-btns,
+.remote-row:focus-within .remote-row-btns { opacity: 1; }
+.remote-row-btn {
+  color: #777;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 5px;
+  font-family: inherit;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.remote-row-btn:hover {
+  background: #1f1f1f;
+  border-color: #333;
+  color: #D97757;
+}
+.remote-row-btn:disabled {
+  color: #555;
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+}
+.remote-row-btn-del:hover {
+  color: #e74c3c;
+  border-color: #e74c3c44;
+}
+.remote-editable { cursor: pointer; }
+.remote-editable:hover { color: #D97757; }
+.remote-row-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid #D9775744;
+  border-radius: 3px;
+  color: #D97757;
+  font-size: 9px;
+  letter-spacing: 0.5px;
   flex-shrink: 0;
 }
-.remote-row-btn {
-  color: #555;
+
+/* ── Tailnet machine picker ── */
+.remote-ts-picker {
+  max-height: 240px;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 6px;
+}
+.remote-ts-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
   background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #d0d0d0;
   font-family: inherit;
-}
-.remote-row-btn:hover { color: #D97757; }
-.remote-row-btn-del:hover { color: #e74c3c; }
-.remote-editable {
+  font-size: 12px;
+  text-align: left;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
-.remote-editable:hover {
+.remote-ts-item:hover { background: #222; }
+.remote-ts-item.selected {
+  border-color: #D97757;
+  background: #1e1614;
   color: #D97757;
 }
-.remote-row-path {
+.remote-ts-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.remote-ts-dot.online { background: #4e9a06; }
+.remote-ts-dot.offline { background: #3a3a3a; }
+.remote-ts-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-ts-ip {
+  color: #555;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.remote-ts-os {
+  color: #666;
+  font-size: 10px;
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: right;
+}
+.remote-ts-item.selected .remote-ts-os { color: #D9775799; }
+.remote-ts-empty {
+  padding: 10px;
+  color: #555;
+  font-size: 11px;
+  text-align: center;
+}
+.remote-ts-error { color: #e74c3c; }
+.remote-ts-warn {
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid #D9775744;
+  border-radius: 4px;
+  background: #1e1614;
   color: #D97757;
   font-size: 10px;
-  display: block;
+  line-height: 1.45;
 }
 
 .settings-row-btn-add {
@@ -915,14 +1127,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 14px 18px;
   border-bottom: 1px solid #222;
+}
+.remote-form-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .remote-form-title {
   color: #D97757;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: bold;
   letter-spacing: 1px;
+}
+.remote-form-sub {
+  color: #666;
+  font-size: 10px;
 }
 .remote-form-close {
   color: #555;
@@ -934,22 +1155,26 @@ body {
   font-family: inherit;
 }
 .remote-form-close:hover { color: #d0d0d0; }
-.remote-form-fields { padding: 10px 12px 4px; }
-.remote-form-row { margin-bottom: 8px; }
+.remote-form-fields { padding: 18px 20px 8px; }
+.remote-form-row { margin-bottom: 12px; }
 .remote-form-row-pair {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
 }
+/* Host/IP holds longer values than Name, so give it the larger share. */
+.remote-form-row-pair-wide { grid-template-columns: 1fr 1.4fr; }
+.remote-form-row-pair .remote-form-row { margin-bottom: 0; }
 .remote-form-row-half {
   flex: 1;
   margin-bottom: 0;
 }
 .remote-form-label {
   display: block;
-  color: #888;
-  font-size: 10px;
-  margin-bottom: 4px;
+  color: #999;
+  font-size: 11px;
+  margin-bottom: 6px;
 }
 .remote-form-hint {
   color: #555;
@@ -963,9 +1188,10 @@ body {
   color: #d0d0d0;
   font-family: 'Share Tech Mono', monospace;
   font-size: 12px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.15s;
 }
 .remote-form-input:focus { border-color: #D97757; }
 .remote-form-input::placeholder { color: #444; }
